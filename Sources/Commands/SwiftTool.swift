@@ -826,12 +826,7 @@ public class SwiftTool<Options: ToolOptions> {
             return self._hostToolchain
         }
 
-        let useDefaultWasiSysroot = (destination.target?.isWASI() ?? false)
-            && self.options.customCompileSDK == nil
-
-        return Result(catching: {
-            try UserToolchain(destination: destination, useDefaultWasiSysroot: useDefaultWasiSysroot)
-        })
+        return Result(catching: { try UserToolchain(destination: destination) })
     }()
 
     /// Lazily compute the host toolchain used to compile the package description.
