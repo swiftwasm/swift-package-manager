@@ -222,7 +222,8 @@ public final class UserToolchain: Toolchain {
         throw InvalidToolchainDiagnostic("could not find swift-api-digester")
     }
 
-    public init(destination: Destination, environment: [String: String] = ProcessEnv.vars) throws {
+    public init(destination: Destination, useDefaultWasiSysroot: Bool = false,
+                environment: [String: String] = ProcessEnv.vars) throws {
         self.destination = destination
         self.processEnvironment = environment
 
@@ -249,14 +250,26 @@ public final class UserToolchain: Toolchain {
 
         // Use the triple from destination or compute the host triple using swiftc.
         self.triple = destination.target ?? Triple.getHostTriple(usingSwiftCompiler: swiftCompilers.compile)
-        self.extraSwiftCFlags = (triple.isDarwin()
-                                    ? ["-sdk", destination.sdk.pathString]
-                                    : [])
-                                  + destination.extraSwiftCFlags
+        var extraSwiftCFlags: [String] = []
+        var extraCCFlags: [String] = []
+        if triple.isDarwin() {
+            extraSwiftCFlags = ["-sdk", destination.sdk.pathString]
+            extraCCFlags = ["-isysroot", destination.sdk.pathString]
+        } else if useDefaultWasiSysroot {
+            // FIXME: messy code but keep change as possible as minimal
+            // Set default sdk when target is WASI and custom sdk is not given
+            let wasiSysroot = swiftCompiler
+                .parentDirectory // bin
+                .parentDirectory // usr
+                .appending(components: "share", "wasi-sysroot")
+            extraSwiftCFlags = ["-sdk", wasiSysroot.pathString]
+            extraCCFlags = ["--sysroot", wasiSysroot.pathString]
+        } else {
+            extraCCFlags = ["--sysroot", destination.sdk.pathString]
+        }
+        self.extraSwiftCFlags = extraSwiftCFlags + destination.extraSwiftCFlags
 
-        self.extraCCFlags = [
-            triple.isDarwin() ? "-isysroot" : "--sysroot", destination.sdk.pathString
-        ] + destination.extraCCFlags
+        self.extraCCFlags = extraCCFlags + destination.extraCCFlags
 
         // Compute the path of directory containing the PackageDescription libraries.
         var pdLibDir = UserManifestResources.libDir(forBinDir: binDir)
