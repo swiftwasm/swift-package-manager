@@ -112,9 +112,9 @@ public struct TargetSourcesBuilder {
         }
 
         // Emit an error if we found files without a matching rule in
-        // tools version >= vNext. This will be activated once resources
+        // tools version >= v5_3. This will be activated once resources
         // support is complete.
-        if toolsVersion >= .vNext {
+        if toolsVersion >= .v5_3 {
             let filesWithNoRules = pathToRule.filter { $0.value.rule == .none }
             if !filesWithNoRules.isEmpty {
                 var error = "found \(filesWithNoRules.count) file(s) which are unhandled; explicitly declare them as resources or exclude from the target\n"
@@ -323,7 +323,7 @@ public struct TargetSourcesBuilder {
         var ignoredDirectoryExtensions = ["xcodeproj", "playground", "xcworkspace"]
 
         // Ignore localization directories if not supported.
-        if toolsVersion < .vNext {
+        if toolsVersion < .v5_3 {
             ignoredDirectoryExtensions.append(Resource.localizationDirectoryExtension)
         }
 
@@ -366,7 +366,7 @@ public struct TargetSourcesBuilder {
             // sources that have an extension but are not explicitly
             // declared as sources in the manifest.
             if
-                toolsVersion >= .vNext &&
+                toolsVersion >= .v5_3 &&
                 path.extension != nil &&
                 path.extension != Resource.localizationDirectoryExtension &&
                 !isDeclaredSource(path)
@@ -471,7 +471,7 @@ public struct FileRuleDescription {
     }
 
     /// The swift compiler rule.
-    public static var swift: FileRuleDescription = {
+    public static let swift: FileRuleDescription = {
         .init(
             rule: .compile,
             toolsVersion: .minimumRequired,
@@ -480,7 +480,7 @@ public struct FileRuleDescription {
     }()
 
     /// The clang compiler rule.
-    public static var clang: FileRuleDescription = {
+    public static let clang: FileRuleDescription = {
         .init(
             rule: .compile,
             toolsVersion: .minimumRequired,
@@ -489,7 +489,7 @@ public struct FileRuleDescription {
     }()
 
     /// The rule for compiling asm files.
-    public static var asm: FileRuleDescription = {
+    public static let asm: FileRuleDescription = {
         .init(
             rule: .compile,
             toolsVersion: .v5,
@@ -498,7 +498,7 @@ public struct FileRuleDescription {
     }()
 
     /// The rule for detecting modulemap files.
-    public static var modulemap: FileRuleDescription = {
+    public static let modulemap: FileRuleDescription = {
         .init(
             rule: .modulemap,
             toolsVersion: .minimumRequired,
@@ -507,7 +507,7 @@ public struct FileRuleDescription {
     }()
 
     /// The rule for detecting header files.
-    public static var header: FileRuleDescription = {
+    public static let header: FileRuleDescription = {
         .init(
             rule: .header,
             toolsVersion: .minimumRequired,
@@ -516,29 +516,38 @@ public struct FileRuleDescription {
     }()
 
     /// File types related to the interface builder and storyboards.
-    public static var xib: FileRuleDescription = {
+    public static let xib: FileRuleDescription = {
         .init(
             rule: .processResource,
-            toolsVersion: .vNext,
+            toolsVersion: .v5_3,
             fileTypes: ["nib", "xib", "storyboard"]
         )
     }()
 
     /// File types related to the asset catalog.
-    public static var assetCatalog: FileRuleDescription = {
+    public static let assetCatalog: FileRuleDescription = {
         .init(
             rule: .processResource,
-            toolsVersion: .vNext,
+            toolsVersion: .v5_3,
             fileTypes: ["xcassets"]
         )
     }()
 
     /// File types related to the CoreData.
-    public static var coredata: FileRuleDescription = {
+    public static let coredata: FileRuleDescription = {
         .init(
             rule: .processResource,
-            toolsVersion: .vNext,
+            toolsVersion: .v5_3,
             fileTypes: ["xcdatamodeld", "xcdatamodel", "xcmappingmodel"]
+        )
+    }()
+
+    /// File types related to Metal.
+    public static let metal: FileRuleDescription = {
+        .init(
+            rule: .processResource,
+            toolsVersion: .v5_3,
+            fileTypes: ["metal"]
         )
     }()
 
@@ -556,6 +565,7 @@ public struct FileRuleDescription {
         xib,
         assetCatalog,
         coredata,
+        metal,
     ]
 }
 

@@ -1412,6 +1412,7 @@ final class BuildPlanTests: XCTestCase {
                             providers: [
                                 .brew(["BTarget"]),
                                 .apt(["BTarget"]),
+                                .yum(["BTarget"]),
                             ]
                         )
                     ]),
@@ -1421,7 +1422,7 @@ final class BuildPlanTests: XCTestCase {
         _ = try BuildPlan(buildParameters: mockBuildParameters(),
             graph: graph, diagnostics: diagnostics, fileSystem: fileSystem)
 
-//        XCTAssertTrue(diagnostics.diagnostics.contains(where: { ($0.message.data is PkgConfigHintDiagnostic) }))
+       XCTAssertTrue(diagnostics.diagnostics.contains(where: { ($0.message.data is PkgConfigHintDiagnostic) }))
     }
 
     func testPkgConfigGenericDiagnostic() throws {
