@@ -243,19 +243,20 @@ public final class UserToolchain: Toolchain {
 
         let swiftCompilers = try UserToolchain.determineSwiftCompilers(binDir: binDir, envSearchPaths: searchPaths)
         self.swiftCompiler = swiftCompilers.compile
-
-        // We require xctest to exist on macOS.
-      #if os(macOS)
-        // FIXME: We should have some general utility to find tools.
-        let xctestFindArgs = ["/usr/bin/xcrun", "--sdk", "macosx", "--find", "xctest"]
-        self.xctest = try AbsolutePath(validating: Process.checkNonZeroExit(arguments: xctestFindArgs, environment: environment).spm_chomp())
-      #else
-        self.xctest = nil
-      #endif
-
+     
         // Use the triple from destination or compute the host triple using swiftc.
         let triple = destination.target ?? Triple.getHostTriple(usingSwiftCompiler: swiftCompilers.compile)
         self.triple = triple
+
+        // We require xctest to exist on macOS.
+        if triple.isDarwin() {
+            // FIXME: We should have some general utility to find tools.
+            let xctestFindArgs = ["/usr/bin/xcrun", "--sdk", "macosx", "--find", "xctest"]
+            self.xctest = try AbsolutePath(validating: Process.checkNonZeroExit(arguments: xctestFindArgs, environment: environment).spm_chomp())
+        } else {
+            self.xctest = nil
+        }
+
         self.extraSwiftCFlags = UserToolchain.deriveSwiftCFlags(triple: triple, destination: destination)
 
         self.extraCCFlags = [
