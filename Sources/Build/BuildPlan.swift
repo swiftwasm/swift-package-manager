@@ -964,7 +964,7 @@ public final class SwiftTargetBuildDescription {
     }
 
     /// Returns the build flags from the declared build settings.
-    private func buildSettingsFlags() -> [String] {
+    fileprivate func buildSettingsFlags() -> [String] {
         let scope = buildParameters.createScope(for: target)
         var flags: [String] = []
 
@@ -1187,9 +1187,9 @@ public final class ProductBuildDescription {
         result += buildParameters.toolchain.extraSwiftCFlags
         result += ["-g"]
         result += ["-j\(buildParameters.jobs)"]
-        result += additionalFlags
+        result += intermediate.description.additionalFlags
         result += buildParameters.sanitizers.compileSwiftFlags()
-        result += self.buildSettingsFlags()
+        result += intermediate.description.buildSettingsFlags()
         result += buildParameters.swiftCompilerFlags
         return result
     }
