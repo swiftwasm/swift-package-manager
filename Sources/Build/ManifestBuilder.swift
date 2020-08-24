@@ -442,8 +442,25 @@ extension LLBuildManifestBuilder {
         )
 
         let cmdName = target.target.getCommandName(config: buildConfig)
-        switch buildParameters.ltoMode {
-        case .none:
+        if let ltoMode = buildParameters.ltoMode {
+            let outputs: [AbsolutePath]
+            switch ltoMode {
+            case .Swift, .SwiftAndLLVM:
+                outputs = [
+                    target.sibOutputPath, target.moduleSummaryOutputPath
+                ]
+            case .LLVM:
+                outputs = [target.bitcodeOutputPath]
+            }
+            let outputNodes = outputs.map(Node.file)
+            manifest.addShellCmd(
+                name: cmdName,
+                description: "Compiling module \(target.target.name) for LTO",
+                inputs: inputs,
+                outputs: outputNodes,
+                args: target.emitSwiftLTOIntermediatesCommandLine(mode: ltoMode))
+            return outputNodes
+        } else {
             let objectNodes = target.objects.map(Node.file)
             manifest.addShellCmd(
                 name: cmdName,
@@ -453,19 +470,6 @@ extension LLBuildManifestBuilder {
                 args: target.emitObjectsCommandLine()
             )
             return objectNodes
-        case .Swift:
-            let outputNodes = [
-                target.sibOutputPath, target.moduleSummaryOutputPath
-            ].map(Node.file)
-            manifest.addShellCmd(
-                name: cmdName,
-                description: "Compiling module \(target.target.name) for Swift LTO",
-                inputs: inputs,
-                outputs: outputNodes,
-                args: target.emitSwiftLTOIntermediatesCommandLine())
-            return outputNodes
-        case .LLVM, .SwiftAndLLVM:
-            fatalError("unimplemented")
         }
     }
 
@@ -761,9 +765,9 @@ extension LLBuildManifestBuilder {
                 inputs: buildProduct.objects.map(Node.file),
                 outputs: [.file(buildProduct.binary)]
             )
-        } else if let ltoMode = buildParameters.ltoMode {
-            switch ltoMode {
-            case .Swift:
+        } else {
+            switch buildParameters.ltoMode {
+            case .Swift, .SwiftAndLLVM:
                 let mergeSummaryCmdName = buildProduct.product
                     .getLLBuildMergedModuleSummaryCmdName(config: buildConfig)
                 manifest.addShellCmd(
@@ -795,19 +799,17 @@ extension LLBuildManifestBuilder {
                     outputs: [.file(buildProduct.binary)],
                     args: buildProduct.linkArguments()
                 )
-            default:
-                fatalError("unimplemented")
-            }
-        } else {
-            let inputs = buildProduct.objects + buildProduct.dylibs.map({ $0.binary })
+            case .none, .LLVM:
+                let inputs = buildProduct.objects + buildProduct.dylibs.map({ $0.binary })
 
-            manifest.addShellCmd(
-                name: cmdName,
-                description: "Linking \(buildProduct.binary.prettyPath())",
-                inputs: inputs.map(Node.file),
-                outputs: [.file(buildProduct.binary)],
-                args: buildProduct.linkArguments()
-            )
+                manifest.addShellCmd(
+                    name: cmdName,
+                    description: "Linking \(buildProduct.binary.prettyPath())",
+                    inputs: inputs.map(Node.file),
+                    outputs: [.file(buildProduct.binary)],
+                    args: buildProduct.linkArguments()
+                )
+            }
         }
 
         // Create a phony node to represent the entire target.

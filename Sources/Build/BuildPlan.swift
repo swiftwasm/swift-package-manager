@@ -512,6 +512,11 @@ public final class SwiftTargetBuildDescription {
     }
 
     /// TOOD
+    var bitcodeOutputPath: AbsolutePath {
+        return buildParameters.buildPath.appending(component: target.c99name + ".bc.o")
+    }
+
+    /// TOOD
     var moduleSummaryOutputPath: AbsolutePath {
         return buildParameters.buildPath.appending(component: target.c99name + ".swiftmodule.summary")
     }
@@ -822,7 +827,7 @@ public final class SwiftTargetBuildDescription {
     }
 
     /// TOOD
-    public func emitSwiftLTOIntermediatesCommandLine() -> [String] {
+    public func emitSwiftLTOIntermediatesCommandLine(mode: BuildParameters.LTOMode) -> [String] {
         assert(buildParameters.ltoMode != nil)
 
         var result: [String] = []
@@ -837,15 +842,23 @@ public final class SwiftTargetBuildDescription {
             result.append("-parse-as-library")
         }
 
-        result.append("-emit-sib")
         for source in target.sources.paths {
             result.append(source.pathString)
         }
-        // FIXME: Support pararell sib emission
+
+        // FIXME: Support partial sib and bc emission
         result.append("-whole-module-optimization")
-        result.append("-emit-module-summary")
-        result.append("-o")
-        result.append(sibOutputPath.pathString)
+        switch mode {
+        case .Swift, .SwiftAndLLVM:
+            result.append("-emit-sib")
+            result.append("-emit-module-summary")
+            result.append("-o")
+            result.append(sibOutputPath.pathString)
+        case .LLVM:
+            result.append("-emit-bc")
+            result.append("-o")
+            result.append(bitcodeOutputPath.pathString)
+        }
 
         result.append("-I")
         result.append(buildParameters.buildPath.pathString)
@@ -875,6 +888,7 @@ public final class SwiftTargetBuildDescription {
     private func writeOutputFileMap() throws -> AbsolutePath {
         let path = tempsPath.appending(component: "output-file-map.json")
         let stream = BufferedOutputByteStream()
+        let compilerOutput = buildParameters.ltoMode == .LLVM ? "llvm-bc" : "object"
 
         stream <<< "{\n"
 
@@ -884,7 +898,7 @@ public final class SwiftTargetBuildDescription {
             let moduleName = target.c99name
             stream <<< "    \"dependencies\": \"" <<< tempsPath.appending(component: moduleName + ".d") <<< "\",\n"
             // FIXME: Need to record this deps file for processing it later.
-            stream <<< "    \"object\": \"" <<< tempsPath.appending(component: moduleName + ".o") <<< "\",\n"
+            stream <<< "    \"\(compilerOutput)\": \"" <<< tempsPath.appending(component: moduleName + ".o") <<< "\",\n"
         }
         stream <<< "    \"swift-dependencies\": \"" <<< masterDepsPath.pathString <<< "\"\n"
 
@@ -908,7 +922,7 @@ public final class SwiftTargetBuildDescription {
                 // FIXME: Need to record this deps file for processing it later.
             }
 
-            stream <<< "    \"object\": \"" <<< object.pathString <<< "\",\n"
+            stream <<< "    \"\(compilerOutput)\": \"" <<< object.pathString <<< "\",\n"
 
             let partialModulePath = objectDir.appending(component: sourceFileName + "~partial.swiftmodule")
             stream <<< "    \"swiftmodule\": \"" <<< partialModulePath.pathString <<< "\",\n"
@@ -1133,8 +1147,11 @@ public final class ProductBuildDescription {
     }
 
     /// TBD
-    public func lowerSIBArguments(_ intermediate: LTOIntermediate, objectOutput: AbsolutePath) -> [String] {
+    public func lowerSIBArguments(_ intermediate: LTOIntermediate,
+                                  objectOutput: AbsolutePath) -> [String] {
         assert(buildParameters.ltoMode != nil)
+        let mode = buildParameters.ltoMode!
+        assert(mode != .LLVM)
 
         let target = intermediate.description.target
         var result: [String] = []
@@ -1147,7 +1164,14 @@ public final class ProductBuildDescription {
             result.append("-parse-as-library")
         }
 
-        result.append("-c")
+        switch mode {
+        case .Swift:
+            result.append("-c")
+        case .SwiftAndLLVM:
+            result.append("-emit-bc")
+        default:
+            fatalError("unreachable")
+        }
         result.append(intermediate.sib.pathString)
         result.append("-whole-module-optimization")
         result.append("-o")
@@ -1631,14 +1655,14 @@ public class BuildPlan {
                 switch buildParameters.ltoMode {
                 case .none:
                     buildProduct.objects += targetMap[target]!.objects
-                case .Swift:
+                case .LLVM:
+                    buildProduct.objects += [description.bitcodeOutputPath]
+                case .Swift, .SwiftAndLLVM:
                     let intermediate = ProductBuildDescription.LTOIntermediate(
                         description: description
                     )
                     buildProduct.ltoIntermediates.insert(intermediate)
                     buildProduct.objects += [intermediate.getObjectOutput(parent: buildProduct)]
-                default:
-                    fatalError("unimplemented")
                 }
             default:
                 buildProduct.objects += targetMap[target]!.objects
