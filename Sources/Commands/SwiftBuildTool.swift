@@ -65,6 +65,11 @@ public class SwiftBuildTool: SwiftTool<BuildToolOptions> {
             to: { $0.target = $1 })
 
         binder.bind(
+            option: parser.add(option: "--lto", kind: BuildParameters.LTOMode.self,
+                usage: "Enable experimental LTO (swift|llvm|swift-llvm)"),
+            to: { $0.ltoMode = $1 })
+
+        binder.bind(
             option: parser.add(option: "--show-bin-path", kind: Bool.self,
                usage: "Print the binary output path"),
             to: { $0.shouldPrintBinPath = $1 })
@@ -177,4 +182,12 @@ extension Diagnostic.Message {
     static func mutuallyExclusiveArgumentsError(arguments: [String]) -> Diagnostic.Message {
         .error(arguments.map{ "'\($0)'" }.spm_localizedJoin(type: .conjunction) + " are mutually exclusive")
     }
+}
+
+extension BuildParameters.LTOMode: StringEnumArgument {
+    public static var completion: ShellCompletion = .values([
+        (Swift.rawValue, "build with Swift LTO"),
+        (LLVM.rawValue, "build with LLVM LTO"),
+        (SwiftAndLLVM.rawValue, "build with Swift and LLVM LTO"),
+    ])
 }

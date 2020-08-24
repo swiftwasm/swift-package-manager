@@ -506,6 +506,16 @@ public final class SwiftTargetBuildDescription {
         return buildParameters.buildPath.appending(component: target.c99name + ".swiftmodule")
     }
 
+    /// TOOD
+    var sibOutputPath: AbsolutePath {
+        return buildParameters.buildPath.appending(component: target.c99name + ".sib")
+    }
+
+    /// TOOD
+    var moduleSummaryOutputPath: AbsolutePath {
+        return buildParameters.buildPath.appending(component: target.c99name + ".swiftmodule.summary")
+    }
+
     /// The path to the wrapped swift module which is created using the modulewrap tool. This is required
     /// for supporting debugging on non-Darwin platforms (On Darwin, we just pass the swiftmodule to the linker
     /// using the `-add_ast_path` flag).
@@ -718,7 +728,7 @@ public final class SwiftTargetBuildDescription {
 
     /// Command-line for emitting just the Swift module.
     public func emitModuleCommandLine() -> [String] {
-        assert(buildParameters.emitSwiftModuleSeparately)
+        assert(buildParameters.emitSwiftModuleSeparately || buildParameters.ltoMode != nil)
 
         var result: [String] = []
         result.append(buildParameters.toolchain.swiftCompiler.pathString)
@@ -806,7 +816,52 @@ public final class SwiftTargetBuildDescription {
         result += additionalFlags
         result += moduleCacheArgs
         result += buildParameters.sanitizers.compileSwiftFlags()
-        result += ["-parseable-output"]
+        result += self.buildSettingsFlags()
+        result += buildParameters.swiftCompilerFlags
+        return result
+    }
+
+    /// TOOD
+    public func emitSwiftLTOIntermediatesCommandLine() -> [String] {
+        assert(buildParameters.ltoMode != nil)
+
+        var result: [String] = []
+        result.append(buildParameters.toolchain.swiftCompiler.pathString)
+
+        result.append("-module-name")
+        result.append(target.c99name)
+
+        result.append("-emit-dependencies")
+
+        if target.type == .library || target.type == .test {
+            result.append("-parse-as-library")
+        }
+
+        result.append("-emit-sib")
+        for source in target.sources.paths {
+            result.append(source.pathString)
+        }
+        // FIXME: Support pararell sib emission
+        result.append("-whole-module-optimization")
+        result.append("-emit-module-summary")
+        result.append("-o")
+        result.append(sibOutputPath.pathString)
+
+        result.append("-I")
+        result.append(buildParameters.buildPath.pathString)
+
+        result += buildParameters.targetTripleArgs(for: target)
+        result += ["-swift-version", swiftVersion.rawValue]
+
+        result += buildParameters.toolchain.extraSwiftCFlags
+        result += optimizationArguments
+        result += testingArguments
+        result += ["-g"]
+        result += ["-j\(buildParameters.jobs)"]
+        result += activeCompilationConditions
+        result += additionalFlags
+        result += moduleCacheArgs
+        result += buildParameters.sanitizers.compileSwiftFlags()
         result += self.buildSettingsFlags()
         result += buildParameters.swiftCompilerFlags
         return result
@@ -994,6 +1049,32 @@ public final class ProductBuildDescription {
     // Computed during build planning.
     public fileprivate(set) var objects = SortedArray<AbsolutePath>()
 
+    public struct LTOIntermediate: Comparable, Equatable {
+        public var description: SwiftTargetBuildDescription
+        public var summary: AbsolutePath { description.moduleSummaryOutputPath }
+        public var sib: AbsolutePath { description.sibOutputPath }
+
+        public func getObjectOutput(parent: ProductBuildDescription) -> AbsolutePath {
+            let base = description.target.c99name
+            return description.moduleSummaryOutputPath
+                .appending(components: "..", base + "-" + parent.product.name + ".o")
+        }
+
+        public static func < (lhs: LTOIntermediate, rhs: LTOIntermediate) -> Bool {
+            lhs.description.target.c99name < rhs.description.target.c99name
+        }
+        public static func == (lhs: LTOIntermediate, rhs: LTOIntermediate) -> Bool {
+            lhs.description.target == rhs.description.target
+        }
+    }
+    /// TODO
+    public fileprivate(set) var ltoIntermediates = SortedArray<LTOIntermediate>()
+
+    /// TOOD
+    public var mergedSummaryPath: AbsolutePath {
+        return tempsPath.appending(component: product.name + ".swiftmodule.merged-summary")
+    }
+
     /// The dynamic libraries this product needs to link with.
     // Computed during build planning.
     fileprivate(set) var dylibs: [ProductBuildDescription] = []
@@ -1040,6 +1121,53 @@ public final class ProductBuildDescription {
     private func stripInvalidArguments(_ args: [String]) -> [String] {
         let invalidArguments: Set<String> = ["-wmo", "-whole-module-optimization"]
         return args.filter({ !invalidArguments.contains($0) })
+    }
+
+    public func mergeSummaryArguments() -> [String] {
+        var args = [buildParameters.toolchain.swiftCompiler.pathString]
+        args.append("-cross-module-opt")
+        args += ltoIntermediates.map(\.summary.pathString)
+        args.append("-o")
+        args.append(mergedSummaryPath.pathString)
+        return args
+    }
+
+    /// TBD
+    public func lowerSIBArguments(_ intermediate: LTOIntermediate, objectOutput: AbsolutePath) -> [String] {
+        assert(buildParameters.ltoMode != nil)
+
+        let target = intermediate.description.target
+        var result: [String] = []
+        result.append(buildParameters.toolchain.swiftCompiler.pathString)
+
+        result.append("-module-name")
+        result.append(target.c99name)
+
+        if target.type == .library || target.type == .test {
+            result.append("-parse-as-library")
+        }
+
+        result.append("-c")
+        result.append(intermediate.sib.pathString)
+        result.append("-whole-module-optimization")
+        result.append("-o")
+        result.append(objectOutput.pathString)
+
+        result.append("-I")
+        result.append(buildParameters.buildPath.pathString)
+
+        let swiftVersion = (target.underlyingTarget as! SwiftTarget).swiftVersion
+        result += buildParameters.targetTripleArgs(for: target)
+        result += ["-swift-version", swiftVersion.rawValue]
+
+        result += buildParameters.toolchain.extraSwiftCFlags
+        result += ["-g"]
+        result += ["-j\(buildParameters.jobs)"]
+        result += additionalFlags
+        result += buildParameters.sanitizers.compileSwiftFlags()
+        result += self.buildSettingsFlags()
+        result += buildParameters.swiftCompilerFlags
+        return result
     }
 
     /// The arguments to link and create this product.
@@ -1499,13 +1627,26 @@ public class BuildPlan {
                 case nil:
                     break
                 }
-            default: break
+
+                switch buildParameters.ltoMode {
+                case .none:
+                    buildProduct.objects += targetMap[target]!.objects
+                case .Swift:
+                    let intermediate = ProductBuildDescription.LTOIntermediate(
+                        description: description
+                    )
+                    buildProduct.ltoIntermediates.insert(intermediate)
+                    buildProduct.objects += [intermediate.getObjectOutput(parent: buildProduct)]
+                default:
+                    fatalError("unimplemented")
+                }
+            default:
+                buildProduct.objects += targetMap[target]!.objects
             }
         }
 
         buildProduct.staticTargets = dependencies.staticTargets
         buildProduct.dylibs = dependencies.dylibs.map({ productMap[$0]! })
-        buildProduct.objects += dependencies.staticTargets.flatMap({ targetMap[$0]!.objects })
         buildProduct.libraryBinaryPaths = dependencies.libraryBinaryPaths
 
         // Write the link filelist file.
