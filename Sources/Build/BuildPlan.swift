@@ -1173,6 +1173,8 @@ public final class ProductBuildDescription {
             fatalError("unreachable")
         }
         result.append(intermediate.sib.pathString)
+        result.append("-module-summary-path")
+        result.append(mergedSummaryPath.pathString)
         result.append("-whole-module-optimization")
         result.append("-o")
         result.append(objectOutput.pathString)
