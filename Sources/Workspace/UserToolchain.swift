@@ -223,6 +223,10 @@ public final class UserToolchain: Toolchain {
         self.destination = destination
         self.processEnvironment = environment
 
+        // Get the search paths from PATH.
+        let searchPaths = getEnvSearchPaths(
+            pathString: ProcessEnv.path, currentWorkingDirectory: localFileSystem.currentWorkingDirectory) + searchPaths
+
         self.envSearchPaths = searchPaths
 
         // Get the binDir from destination.

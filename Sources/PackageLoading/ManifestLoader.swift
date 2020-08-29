@@ -77,6 +77,9 @@ public protocol ManifestLoaderProtocol {
         fileSystem: FileSystem?,
         diagnostics: DiagnosticsEngine?
     ) throws -> Manifest
+
+    /// Reset any internal cache held by the manifest loader.
+    func resetCache() throws
 }
 
 extension ManifestLoaderProtocol {
@@ -112,6 +115,9 @@ extension ManifestLoaderProtocol {
             diagnostics: diagnostics
         )
     }
+
+    public func resetCache() throws {
+    }
 }
 
 public protocol ManifestLoaderDelegate {
@@ -136,30 +142,28 @@ public final class ManifestLoader: ManifestLoaderProtocol {
     }
     let cacheDir: AbsolutePath!
     let delegate: ManifestLoaderDelegate?
-    let cache: PersistentCacheProtocol?
+    private(set) var cache: PersistentCacheProtocol?
+    private let extraManifestFlags: [String]
 
     public init(
         manifestResources: ManifestResourceProvider,
         serializedDiagnostics: Bool = false,
         isManifestSandboxEnabled: Bool = true,
         cacheDir: AbsolutePath? = nil,
-        delegate: ManifestLoaderDelegate? = nil
+        delegate: ManifestLoaderDelegate? = nil,
+        extraManifestFlags: [String] = []
     ) {
         self.resources = manifestResources
         self.serializedDiagnostics = serializedDiagnostics
         self.isManifestSandboxEnabled = isManifestSandboxEnabled
         self.delegate = delegate
+        self.extraManifestFlags = extraManifestFlags
 
         // Resolve symlinks since we can't use them in sandbox profiles.
         if let cacheDir = cacheDir {
             try? localFileSystem.createDirectory(cacheDir, recursive: true)
         }
         self.cacheDir = cacheDir.map(resolveSymlinks)
-
-        self.cache = cacheDir.flatMap {
-            // FIXME: It would be nice to emit a warning if we weren't able to create the cache.
-            try? SQLiteBackedPersistentCache(cacheFilePath: $0.appending(component: "manifest.db"))
-        }
     }
 
     @available(*, deprecated)
@@ -237,6 +241,7 @@ public final class ManifestLoader: ManifestLoaderProtocol {
         fileSystem: FileSystem? = nil,
         diagnostics: DiagnosticsEngine? = nil
     ) throws -> Manifest {
+        try self.createCacheIfNeeded()
 
         // Inform the delegate.
         self.delegate?.willLoad(manifest: inputPath)
@@ -592,6 +597,7 @@ public final class ManifestLoader: ManifestLoaderProtocol {
         }
     }
 
+    private static var _hostTriple: Triple?
     private static var _packageDescriptionMinimumDeploymentTarget: String?
 
     /// Parse the manifest at the given path to JSON.
@@ -660,11 +666,15 @@ public final class ManifestLoader: ManifestLoaderProtocol {
 
             // Use the same minimum deployment target as the PackageDescription library (with a fallback of 10.15).
             #if os(macOS)
+            if Self._hostTriple == nil {
+                Self._hostTriple = Triple.getHostTriple(usingSwiftCompiler: resources.swiftCompiler)
+            }
+            let triple = Self._hostTriple!
             if Self._packageDescriptionMinimumDeploymentTarget == nil {
                 Self._packageDescriptionMinimumDeploymentTarget = (try MinimumDeploymentTarget.computeMinimumDeploymentTarget(of: macOSPackageDescriptionPath))?.versionString ?? "10.15"
             }
             let version = Self._packageDescriptionMinimumDeploymentTarget!
-            cmd += ["-target", "x86_64-apple-macosx\(version)"]
+            cmd += ["-target", "\(triple.tripleString(forPlatformVersion: version))"]
             #endif
 
             cmd += compilerFlags
@@ -682,6 +692,8 @@ public final class ManifestLoader: ManifestLoaderProtocol {
             }
 
             cmd += [manifestPath.pathString]
+
+            cmd += self.extraManifestFlags
 
             try withTemporaryDirectory(removeTreeOnDeinit: true) { tmpDir in
                 // Set path to compiled manifest executable.
@@ -830,6 +842,25 @@ public final class ManifestLoader: ManifestLoaderProtocol {
     private func runtimePath(for version: ToolsVersion) -> AbsolutePath {
         // Bin dir will be set when developing swiftpm without building all of the runtimes.
         return resources.binDir ?? resources.libDir.appending(version.runtimeSubpath)
+    }
+
+    /// Returns path to the manifest database inside the given cache directory.
+    private static func manifestCacheDBPath(_ cacheDir: AbsolutePath) -> AbsolutePath {
+        return cacheDir.appending(component: "manifest.db")
+    }
+
+    func createCacheIfNeeded() throws {
+        // Return if we have already created the cache.
+        guard self.cache == nil else { return }
+        guard let manifestCacheDBPath = cacheDir.flatMap({ Self.manifestCacheDBPath($0) }) else { return }
+        self.cache = try SQLiteBackedPersistentCache(cacheFilePath: manifestCacheDBPath)
+    }
+
+    public func resetCache() throws {
+        guard let manifestCacheDBPath = cacheDir.flatMap({ Self.manifestCacheDBPath($0) }) else { return }
+        self.cache = nil
+        // Also remove the database file from disk.
+        try localFileSystem.removeFileTree(manifestCacheDBPath)
     }
 }
 

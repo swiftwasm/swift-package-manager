@@ -144,6 +144,11 @@ def add_test_args(parser):
         action="append",
         help="filter to apply on which tests to run",
         default=[])
+    parser.add_argument(
+        "--skip-integrated-driver-tests",
+        action="store_true",
+        help="whether to skip tests with the integrated driver",
+        default=True)
 
 def parse_global_args(args):
     """Parses and cleans arguments necessary for all actions."""
@@ -151,6 +156,7 @@ def parse_global_args(args):
     args.project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     args.tsc_source_dir = os.path.join(args.project_root, "swift-tools-support-core")
     args.yams_source_dir = os.path.join(args.project_root, "..", "yams")
+    args.swift_argument_parser_source_dir = os.path.join(args.project_root, "..", "swift-argument-parser")
     args.swift_driver_source_dir = os.path.join(args.project_root, "..", "swift-driver")
     args.source_root = os.path.join(args.project_root, "Sources")
 
@@ -176,7 +182,10 @@ def parse_build_args(args):
     args.clang_path = get_clang_path(args)
     args.cmake_path = get_cmake_path(args)
     args.ninja_path = get_ninja_path(args)
-    args.target_dir = os.path.join(args.build_dir, get_build_target(args))
+    if os.getenv("CROSS_COMPILE_HOSTS"): # Use XCBuild target directory when building for multiple arches.
+        args.target_dir = os.path.join(args.build_dir, "apple/Products")
+    else:
+        args.target_dir = os.path.join(args.build_dir, get_build_target(args))
     args.bootstrap_dir = os.path.join(args.target_dir, "bootstrap")
     args.conf = 'release' if args.release else 'debug'
     args.bin_dir = os.path.join(args.target_dir, args.conf)
@@ -280,6 +289,7 @@ def build(args):
 
     build_tsc(args)
     build_yams(args)
+    build_swift_argument_parser(args)
     build_swift_driver(args)
     build_swiftpm_with_cmake(args)
     build_swiftpm_with_swiftpm(args,integrated_swift_driver=False)
@@ -302,6 +312,9 @@ def test(args):
 
     # Test SwiftPM.
     call_swiftpm(args, cmd)
+
+    if args.skip_integrated_driver_tests:
+        return
 
     # Build SwiftPM with the integrated driver.
     note("Bootstrap with the integrated Swift driver")
@@ -343,7 +356,8 @@ def install(args):
         # Install the swiftmodule and swiftdoc files.
         for module in libswiftpm_modules:
             install_binary(args, module + ".swiftmodule", dest)
-            install_binary(args, module + ".swiftdoc", dest)
+            if not os.getenv("CROSS_COMPILE_HOSTS"): # When compiling for multiple arches, swiftdoc is part of the swiftmodule directory
+                install_binary(args, module + ".swiftdoc", dest)
 
         # Install the C headers.
         tscclibc_include_dir = os.path.join(args.tsc_source_dir, "Sources/TSCclibc/include")
@@ -389,7 +403,10 @@ def install_binary(args, binary, dest_dir):
     note("Installing %s to %s" % (src, dest))
 
     mkdir_p(os.path.dirname(dest))
-    file_util.copy_file(src, dest, update=1)
+    if os.path.isdir(src) and os.getenv("CROSS_COMPILE_HOSTS"): # Handle swiftmodule directories if compiling for multiple arches.
+        dir_util.copy_tree(src, dest)
+    else:
+        file_util.copy_file(src, dest, update=1)
 
 # -----------------------------------------------------------
 # Build functions
@@ -459,6 +476,19 @@ def build_tsc(args):
 
     build_with_cmake(args, cmake_flags, args.tsc_source_dir, args.tsc_build_dir)
 
+def build_swift_argument_parser(args):
+    note("Building swift-argument-parser")
+    args.swift_argument_parser_build_dir = os.path.join(args.target_dir, "swift-argument-parser")
+
+    cmake_flags = []
+    if platform.system() == 'Darwin':
+        cmake_flags.append("-DCMAKE_C_FLAGS=-target %s%s" % (get_build_target(args), g_macos_deployment_target))
+        cmake_flags.append("-DCMAKE_OSX_DEPLOYMENT_TARGET=%s" % g_macos_deployment_target)
+
+    cmake_flags.append("-DBUILD_TESTING=NO")
+    cmake_flags.append("-DBUILD_EXAMPLES=NO")
+    build_with_cmake(args, cmake_flags, args.swift_argument_parser_source_dir, args.swift_argument_parser_build_dir)
+
 def build_yams(args):
     note("Building Yams")
     args.yams_build_dir = os.path.join(args.target_dir, "yams")
@@ -506,6 +536,7 @@ def build_swiftpm_with_cmake(args):
         get_llbuild_cmake_arg(args),
         "-DTSC_DIR=" + os.path.join(args.tsc_build_dir, "cmake/modules"),
         "-DYams_DIR=" + os.path.join(args.yams_build_dir, "cmake/modules"),
+        "-DArgumentParser_DIR=" + os.path.join(args.swift_argument_parser_build_dir, "cmake/modules"),
         "-DSwiftDriver_DIR=" + os.path.join(args.swift_driver_build_dir, "cmake/modules"),
     ]
 
@@ -520,6 +551,7 @@ def build_swiftpm_with_cmake(args):
 
     if platform.system() == "Darwin":
         add_rpath_for_cmake_build(args, os.path.join(args.yams_build_dir, "lib"))
+        add_rpath_for_cmake_build(args, os.path.join(args.swift_argument_parser_build_dir, "lib"))
         add_rpath_for_cmake_build(args, os.path.join(args.swift_driver_build_dir, "lib"))
 
 def build_swiftpm_with_swiftpm(args, integrated_swift_driver):
@@ -535,6 +567,13 @@ def build_swiftpm_with_swiftpm(args, integrated_swift_driver):
     ]
     if integrated_swift_driver:
         swiftpm_args.append("--use-integrated-swift-driver")
+
+    build_target = get_build_target(args)
+    cross_compile_host = os.getenv("CROSS_COMPILE_HOSTS")
+    if build_target == 'x86_64-apple-macosx' and cross_compile_host == "macosx-arm64":
+        swiftpm_args += ["--arch", "x86_64", "--arch", "arm64"]
+    elif cross_compile_host:
+        error("cannot cross-compile for %s" % cross_compile_host)
 
     call_swiftpm(args, swiftpm_args)
 
@@ -607,8 +646,9 @@ def get_swiftpm_env_cmd(args):
         os.path.join(args.tsc_build_dir, "lib"),
         os.path.join(args.llbuild_build_dir, "lib"),
         os.path.join(args.yams_build_dir, "lib"),
+        os.path.join(args.swift_argument_parser_build_dir, "lib"),
         os.path.join(args.swift_driver_build_dir, "lib"),
-    ])
+    ] + args.target_info["paths"]["runtimeLibraryPaths"])
 
     if platform.system() == 'Darwin':
         env_cmd.append("DYLD_LIBRARY_PATH=%s" % libs_joined)
