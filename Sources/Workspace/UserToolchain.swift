@@ -219,13 +219,19 @@ public final class UserToolchain: Toolchain {
             + destination.extraSwiftCFlags
     }
 
-    public init(destination: Destination, searchPaths: [AbsolutePath], environment: [String: String] = ProcessEnv.vars) throws {
+    public init(
+        destination: Destination,
+        searchPaths: [AbsolutePath] = [],
+        environment: [String: String] = ProcessEnv.vars
+    ) throws {
         self.destination = destination
         self.processEnvironment = environment
 
         // Get the search paths from PATH.
         let searchPaths = getEnvSearchPaths(
-            pathString: ProcessEnv.path, currentWorkingDirectory: localFileSystem.currentWorkingDirectory) + searchPaths
+            pathString: ProcessEnv.path,
+            currentWorkingDirectory: localFileSystem.currentWorkingDirectory
+        ) + searchPaths
 
         self.envSearchPaths = searchPaths
 
@@ -235,7 +241,7 @@ public final class UserToolchain: Toolchain {
         let swiftCompilers = try UserToolchain.determineSwiftCompilers(binDir: binDir, envSearchPaths: searchPaths)
         self.swiftCompiler = swiftCompilers.compile
         self.archs = destination.archs
-    
+
         // Use the triple from destination or compute the host triple using swiftc.
         var triple = destination.target ?? Triple.getHostTriple(usingSwiftCompiler: swiftCompilers.compile)
 
