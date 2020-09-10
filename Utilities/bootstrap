@@ -523,6 +523,7 @@ def build_swift_driver(args):
         get_llbuild_cmake_arg(args),
         "-DTSC_DIR=" + os.path.join(args.tsc_build_dir, "cmake/modules"),
         "-DYams_DIR=" + os.path.join(args.yams_build_dir, "cmake/modules"),
+        "-DArgumentParser_DIR=" + os.path.join(args.swift_argument_parser_build_dir, "cmake/modules"),
     ]
     if platform.system() == 'Darwin':
         cmake_flags.append("-DCMAKE_C_FLAGS=-target %s%s" % (get_build_target(args), g_macos_deployment_target))
@@ -576,13 +577,6 @@ def build_swiftpm_with_swiftpm(args, integrated_swift_driver):
     ]
     if integrated_swift_driver:
         swiftpm_args.append("--use-integrated-swift-driver")
-
-    build_target = get_build_target(args)
-    cross_compile_hosts = args.cross_compile_hosts
-    if build_target == 'x86_64-apple-macosx' and "macosx-arm64" in cross_compile_hosts:
-        swiftpm_args += ["--arch", "x86_64", "--arch", "arm64"]
-    elif cross_compile_hosts:
-        error("cannot cross-compile for %s" % cross_compile_hosts)
 
     call_swiftpm(args, swiftpm_args)
 
@@ -733,6 +727,13 @@ def get_swiftpm_flags(args):
     # installed executables and shared libraries.
     if platform.system() != "Darwin" and args.command == 'install':
         build_flags.extend(["-Xswiftc", "-no-toolchain-stdlib-rpath"])
+
+    build_target = get_build_target(args)
+    cross_compile_hosts = args.cross_compile_hosts
+    if build_target == 'x86_64-apple-macosx' and "macosx-arm64" in cross_compile_hosts:
+        build_flags += ["--arch", "x86_64", "--arch", "arm64"]
+    elif cross_compile_hosts:
+        error("cannot cross-compile for %s" % cross_compile_hosts)
 
     return build_flags
 
