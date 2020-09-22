@@ -323,8 +323,20 @@ extension LLBuildManifestBuilder {
                 // product into its constituent targets.
                 continue
             }
+            guard target.underlyingTarget.type != .systemModule,
+                  target.underlyingTarget.type != .binary else {
+                // Much like non-Swift targets, system modules will consist of a modulemap
+                // somewhere in the filesystem, with the path to that module being either
+                // manually-specified or computed based on the system module type (apt, brew).
+                // Similarly, binary targets will bring in an .xcframework, the contents of
+                // which will be exposed via search paths.
+                //
+                // In both cases, the dependency scanning action in the driver will be automatically
+                // be able to detect such targets' modules.
+                continue
+            }
             guard let description = plan.targetMap[target] else {
-                fatalError("Expected description for target: \(target)")
+                fatalError("Expected description for target \(target)")
             }
             switch description {
                 case .swift(let desc):
@@ -350,8 +362,6 @@ extension LLBuildManifestBuilder {
 
         // Commands.
         try addExplicitBuildSwiftCmds(description, inputs: inputs,
-                                      objectNodes: objectNodes,
-                                      moduleNode: moduleNode,
                                       targetDepGraphMap: &targetDepGraphMap)
 
         addTargetCmd(description, cmdOutputs: cmdOutputs)
@@ -360,8 +370,7 @@ extension LLBuildManifestBuilder {
 
     private func addExplicitBuildSwiftCmds(
         _ targetDescription: SwiftTargetBuildDescription,
-        inputs: [Node], objectNodes: [Node], moduleNode: Node,
-        targetDepGraphMap: inout [ResolvedTarget: InterModuleDependencyGraph]
+        inputs: [Node], targetDepGraphMap: inout [ResolvedTarget: InterModuleDependencyGraph]
     ) throws {
         // Pass the driver its external dependencies (target dependencies)
         var targetDependencyMap: SwiftDriver.ExternalDependencyArtifactMap = [:]
@@ -432,9 +441,8 @@ extension LLBuildManifestBuilder {
         guard let dependencyGraph = targetDepGraphMap[target] else {
             fatalError("Expected dependency graph for target: \(target.description)")
         }
-        let moduleName = target.name
         let dependencyModulePath = dependencySwiftTargetDescription.moduleOutputPath
-        dependencyArtifactMap[ModuleDependencyId.swiftPlaceholder(moduleName)] =
+        dependencyArtifactMap[ModuleDependencyId.swiftPlaceholder(target.c99name)] =
             (dependencyModulePath, dependencyGraph)
 
         collectTargetDependencyInfos(for: target,
