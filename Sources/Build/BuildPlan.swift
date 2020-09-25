@@ -1205,7 +1205,7 @@ public class BuildPlan {
         _ buildParameters: BuildParameters,
         _ graph: PackageGraph
     ) throws -> [(ResolvedProduct, SwiftTargetBuildDescription)] {
-        guard buildParameters.triple.isLinux() else {
+        guard buildParameters.triple.needsLinuxMain else {
             return []
         }
 
@@ -1530,7 +1530,7 @@ public class BuildPlan {
             }
         }
 
-        if buildParameters.triple.isLinux() {
+        if buildParameters.triple.needsLinuxMain {
             if product.type == .test {
                 linuxMainMap[product].map{ staticTargets.append($0) }
             }
@@ -1844,6 +1844,17 @@ fileprivate extension Triple.OS {
             return nil // XCFrameworks do not support any of these platforms today.
         case .macOS:
             return "macos"
+        }
+    }
+}
+
+fileprivate extension Triple {
+    var needsLinuxMain: Bool {
+        switch os {
+        case .linux, .wasi:
+            return true
+        default:
+            return false
         }
     }
 }
