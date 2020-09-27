@@ -112,7 +112,7 @@ public final class UserToolchain: Toolchain {
 
         // Get the search paths from PATH.
         let envSearchPaths = getEnvSearchPaths(
-            pathString: ProcessEnv.path,
+            pathString: ProcessEnv.vars["PATH"],
             currentWorkingDirectory: localFileSystem.currentWorkingDirectory
         )
 
@@ -247,7 +247,7 @@ public final class UserToolchain: Toolchain {
 
         // Get the search paths from PATH.
         self.envSearchPaths = getEnvSearchPaths(
-            pathString: ProcessEnv.path,
+            pathString: ProcessEnv.vars["PATH"],
             currentWorkingDirectory: localFileSystem.currentWorkingDirectory
         )
 
