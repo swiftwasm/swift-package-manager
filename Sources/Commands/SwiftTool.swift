@@ -656,10 +656,14 @@ public class SwiftTool {
             // in Swift toolchain
             do {
                 let compilers = try UserToolchain.determineSwiftCompilers(binDir: destination.binDir)
-                destination.sdk = compilers.compile
+                let wasiSysroot = compilers.compile
                     .parentDirectory // bin
                     .parentDirectory // usr
                     .appending(components: "share", "wasi-sysroot")
+                destination = Destination(
+                    target: target, sdk: wasiSysroot, binDir: destination.binDir,
+                    extraCCFlags: [], extraSwiftCFlags: [], extraCPPFlags: []
+                )
             } catch {
                 return .failure(error)
             }
