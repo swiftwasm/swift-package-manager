@@ -388,7 +388,7 @@ extension SupportedPlatform {
         /// WebAssembly System Interface is available.
         static let wasi = WasmFeatures(rawValue: 1 << 0)
 
-        /// Shared linear memory and atomic memory access is available.
+        /// Shared linear memory and atomic memory access are available.
         static let atomics = WasmFeatures(rawValue: 1 << 1)
 
         /// Fixed-width SIMD is available.
