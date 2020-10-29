@@ -45,6 +45,9 @@ public struct Platform: Encodable {
     /// The WebAssembly System Interface platform.
     @available(_PackageDescription, introduced: 5.3)
     public static let wasi: Platform = Platform(name: "wasi")
+
+    /// The WebAssembly platform.
+    public static let wasm: Platform = Platform(name: "wasm")
 }
 
 /// A platform that the Swift package supports.
@@ -65,17 +68,20 @@ public struct Platform: Encodable {
 /// target of a package's dependencies must be lower than or equal to the top-level package's
 /// deployment target version for a particular platform.
 public struct SupportedPlatform: Encodable {
-
     /// The platform.
     let platform: Platform
 
     /// The platform version.
     let version: String?
 
+    /// The platform features.
+    let features: Int64?
+
     /// Creates supported platform instance.
-    init(platform: Platform, version: String? = nil) {
+    init(platform: Platform, version: String? = nil, features: Int64? = nil) {
         self.platform = platform
         self.version = version
+        self.features = features
     }
 
     /// Configures the minimum deployment target version for the macOS platform.
@@ -160,6 +166,10 @@ public struct SupportedPlatform: Encodable {
     /// - Parameter versionString: The minimum deployment target as a string representation of two or three dot-separated integers, such as `2.0.1`.
     public static func watchOS(_ versionString: String) -> SupportedPlatform {
         return SupportedPlatform(platform: .watchOS, version: SupportedPlatform.WatchOSVersion(string: versionString).version)
+    }
+
+    public static func wasm(_ features: WasmFeatures) -> SupportedPlatform {
+        return SupportedPlatform(platform: .wasm, features: features.rawValue)
     }
 }
 
@@ -361,6 +371,28 @@ extension SupportedPlatform {
         /// - Since: First available in PackageDescription 5.3
         @available(_PackageDescription, introduced: 5.3)
         public static let v7: WatchOSVersion = .init(string: "7.0")
+    }
+
+    /// The supported WebAssembly features.
+    public struct WasmFeatures: Encodable, OptionSet {
+        public init(rawValue: Int64) {
+            self.rawValue = rawValue
+        }
+
+        /// The underlying features representation.
+        public let rawValue: Int64
+
+        /// Minimum available feature set.
+        static let mvp = WasmFeatures([])
+
+        /// WebAssembly System Interface is available.
+        static let wasi = WasmFeatures(rawValue: 1 << 0)
+
+        /// Shared linear memory and atomic memory access are available.
+        static let atomics = WasmFeatures(rawValue: 1 << 1)
+
+        /// Fixed-width SIMD is available.
+        static let simd = WasmFeatures(rawValue: 1 << 2)
     }
 }
 
