@@ -220,11 +220,7 @@ public struct BuildParameters: Encodable {
     public func binaryRelativePath(for product: ResolvedProduct) -> RelativePath {
         switch product.type {
         case .executable:
-            if triple.isWindows() {
-                return RelativePath("\(product.name).exe")
-            } else {
-                return RelativePath(product.name)
-            }
+            return RelativePath("\(product.name)\(triple.executableExtension)")
         case .library(.static):
             return RelativePath("lib\(product.name).a")
         case .library(.dynamic):
