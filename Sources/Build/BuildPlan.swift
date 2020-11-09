@@ -513,12 +513,12 @@ public final class SwiftTargetBuildDescription {
 
     /// TOOD
     var bitcodeOutputPath: AbsolutePath {
-        return buildParameters.buildPath.appending(component: target.c99name + ".bc.o")
+        return buildParameters.buildPath.appending(component: target.c99name + ".bc")
     }
 
     /// TOOD
     var moduleSummaryOutputPath: AbsolutePath {
-        return buildParameters.buildPath.appending(component: target.c99name + ".swiftmodule.summary")
+        return buildParameters.buildPath.appending(component: target.c99name + ".swiftmodulesummary")
     }
 
     /// The path to the wrapped swift module which is created using the modulewrap tool. This is required
@@ -862,6 +862,7 @@ public final class SwiftTargetBuildDescription {
             result.append(sibOutputPath.pathString)
         case .LLVM:
             result.append("-emit-bc")
+            result.append("-lto=llvm-thin")
             result.append("-o")
             result.append(bitcodeOutputPath.pathString)
         }
@@ -1073,11 +1074,19 @@ public final class ProductBuildDescription {
         public var description: SwiftTargetBuildDescription
         public var summary: AbsolutePath { description.moduleSummaryOutputPath }
         public var sib: AbsolutePath { description.sibOutputPath }
+        public var mode: BuildParameters.LTOMode
 
         public func getObjectOutput(parent: ProductBuildDescription) -> AbsolutePath {
             let base = description.target.c99name
+            let ext: String
+            switch mode {
+            case .LLVM, .SwiftAndLLVM:
+                ext = "bc"
+            case .Swift:
+                ext = "o"
+            }
             return description.moduleSummaryOutputPath
-                .appending(components: "..", base + "-" + parent.product.name + ".o")
+                .appending(components: "..", base + "-" + parent.product.name + ".\(ext)")
         }
 
         public static func < (lhs: LTOIntermediate, rhs: LTOIntermediate) -> Bool {
@@ -1145,7 +1154,7 @@ public final class ProductBuildDescription {
 
     public func mergeSummaryArguments() -> [String] {
         var args = [buildParameters.toolchain.swiftCompiler.pathString]
-        args.append("-cross-module-opt")
+        args.append("-merge-module-summary")
         args += ltoIntermediates.map(\.summary.pathString)
         args.append("-o")
         args.append(mergedSummaryPath.pathString)
@@ -1667,7 +1676,7 @@ public class BuildPlan {
                     buildProduct.objects += [description.bitcodeOutputPath]
                 case .Swift, .SwiftAndLLVM:
                     let intermediate = ProductBuildDescription.LTOIntermediate(
-                        description: description
+                        description: description, mode: buildParameters.ltoMode!
                     )
                     buildProduct.ltoIntermediates.insert(intermediate)
                     buildProduct.objects += [intermediate.getObjectOutput(parent: buildProduct)]

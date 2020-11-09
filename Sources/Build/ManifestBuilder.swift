@@ -895,7 +895,7 @@ extension ResolvedProduct {
     }
 
     public func getLLBuildCompileFromSibCmdName(config: String, dependency: String) -> String {
-        return "\(name)-\(dependency)-\(config).merged-module-summary"
+        return "\(name)-\(dependency)-\(config).o"
     }
 }
 
