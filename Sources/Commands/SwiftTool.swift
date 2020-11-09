@@ -611,6 +611,7 @@ public class SwiftTool {
                 sanitizers: options.enabledSanitizers,
                 enableCodeCoverage: options.shouldEnableCodeCoverage,
                 indexStoreMode: options.indexStore,
+                ltoMode: options.ltoMode,
                 enableParseableModuleInterfaces: options.shouldEnableParseableModuleInterfaces,
                 enableTestDiscovery: options.enableTestDiscovery,
                 emitSwiftModuleSeparately: options.emitSwiftModuleSeparately,

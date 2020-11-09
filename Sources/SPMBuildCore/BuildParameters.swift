@@ -26,6 +26,12 @@ public struct BuildParameters: Encodable {
         case auto
     }
 
+    public enum LTOMode: String, Encodable {
+        case LLVM = "llvm"
+        case Swift = "swift"
+        case SwiftAndLLVM = "swift-llvm"
+    }
+
     /// Represents the debugging strategy.
     ///
     /// Swift binaries requires the swiftmodule files in order for lldb to work.
@@ -76,6 +82,9 @@ public struct BuildParameters: Encodable {
 
     /// The mode to use for indexing-while-building feature.
     public var indexStoreMode: IndexStoreMode
+
+    /// TOOD
+    public var ltoMode: LTOMode?
 
     /// Whether to enable code coverage.
     public var enableCodeCoverage: Bool
@@ -148,6 +157,7 @@ public struct BuildParameters: Encodable {
         sanitizers: EnabledSanitizers = EnabledSanitizers(),
         enableCodeCoverage: Bool = false,
         indexStoreMode: IndexStoreMode = .auto,
+        ltoMode: LTOMode? = nil,
         enableParseableModuleInterfaces: Bool = false,
         enableTestDiscovery: Bool = false,
         emitSwiftModuleSeparately: Bool = false,
@@ -172,6 +182,7 @@ public struct BuildParameters: Encodable {
         self.sanitizers = sanitizers
         self.enableCodeCoverage = enableCodeCoverage
         self.indexStoreMode = indexStoreMode
+        self.ltoMode = ltoMode
         self.enableParseableModuleInterfaces = enableParseableModuleInterfaces
         self.enableTestDiscovery = enableTestDiscovery
         self.emitSwiftModuleSeparately = emitSwiftModuleSeparately

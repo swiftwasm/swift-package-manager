@@ -111,6 +111,8 @@ public extension Sanitizer {
     }
 }
 
+extension BuildParameters.LTOMode: ExpressibleByArgument {}
+
 public struct SwiftToolOptions: ParsableArguments {
     @OptionGroup()
     var buildFlagsGroup: BuildFlagsGroup
@@ -241,6 +243,9 @@ public struct SwiftToolOptions: ParsableArguments {
     /// The number of jobs for llbuild to start (aka the number of schedulerLanes)
     @Option(name: .shortAndLong, help: "The number of jobs to spawn in parallel during the build process")
     var jobs: UInt32?
+
+    @Option(name: .customLong("lto"), help: "Enable experimental LTO (swift|llvm|swift-llvm)")
+    var ltoMode: BuildParameters.LTOMode?
 
     /// Whether to enable test discovery on platforms without Objective-C runtime.
     @Flag(help: "Enable test discovery on platforms without Objective-C runtime")
