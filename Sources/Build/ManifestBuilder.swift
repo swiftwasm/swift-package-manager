@@ -193,13 +193,16 @@ extension LLBuildManifestBuilder {
         // Outputs.
         let objectNodes = target.objects.map(Node.file)
         let moduleNode = Node.file(target.moduleOutputPath)
-        let cmdOutputs = objectNodes + [moduleNode]
+        var cmdOutputs: [Node] = []
 
         if buildParameters.useIntegratedSwiftDriver {
+            cmdOutputs += objectNodes + [moduleNode]
             try addSwiftCmdsViaIntegratedDriver(target, inputs: inputs, objectNodes: objectNodes, moduleNode: moduleNode)
-        } else if buildParameters.emitSwiftModuleSeparately {
-            addSwiftCmdsEmitSwiftModuleSeparately(target, inputs: inputs, objectNodes: objectNodes, moduleNode: moduleNode)
+        } else if buildParameters.emitSwiftModuleSeparately || buildParameters.ltoMode != nil {
+            cmdOutputs += addSwiftCmdsEmitSwiftModuleSeparately(target, inputs: inputs, moduleNode: moduleNode)
+            cmdOutputs += [moduleNode]
         } else {
+            cmdOutputs += objectNodes + [moduleNode]
             addCmdWithBuiltinSwiftTool(target, inputs: inputs, cmdOutputs: cmdOutputs)
         }
 
@@ -445,12 +448,13 @@ extension LLBuildManifestBuilder {
                                            dependencyModulePathMap: &dependencyModulePathMap)
     }
 
+    /// TOOD
+    /// - Returns: output nodes
     private func addSwiftCmdsEmitSwiftModuleSeparately(
         _ target: SwiftTargetBuildDescription,
         inputs: [Node],
-        objectNodes: [Node],
         moduleNode: Node
-    ) {
+    ) -> [Node] {
         // FIXME: We need to ingest the emitted dependencies.
 
         manifest.addShellCmd(
@@ -462,13 +466,35 @@ extension LLBuildManifestBuilder {
         )
 
         let cmdName = target.target.getCommandName(config: buildConfig)
-        manifest.addShellCmd(
-            name: cmdName,
-            description: "Compiling module \(target.target.name)",
-            inputs: inputs,
-            outputs: objectNodes,
-            args: target.emitObjectsCommandLine()
-        )
+        if let ltoMode = buildParameters.ltoMode {
+            let outputs: [AbsolutePath]
+            switch ltoMode {
+            case .Swift, .SwiftAndLLVM:
+                outputs = [
+                    target.sibOutputPath, target.moduleSummaryOutputPath
+                ]
+            case .LLVM:
+                outputs = [target.bitcodeOutputPath]
+            }
+            let outputNodes = outputs.map(Node.file)
+            manifest.addShellCmd(
+                name: cmdName,
+                description: "Compiling module \(target.target.name) for LTO",
+                inputs: inputs,
+                outputs: outputNodes,
+                args: target.emitSwiftLTOIntermediatesCommandLine(mode: ltoMode))
+            return outputNodes
+        } else {
+            let objectNodes = target.objects.map(Node.file)
+            manifest.addShellCmd(
+                name: cmdName,
+                description: "Compiling module \(target.target.name)",
+                inputs: inputs,
+                outputs: objectNodes,
+                args: target.emitObjectsCommandLine()
+            )
+            return objectNodes
+        }
     }
 
     private func addCmdWithBuiltinSwiftTool(
@@ -764,15 +790,50 @@ extension LLBuildManifestBuilder {
                 outputs: [.file(buildProduct.binary)]
             )
         } else {
-            let inputs = buildProduct.objects + buildProduct.dylibs.map({ $0.binary })
+            switch buildParameters.ltoMode {
+            case .Swift, .SwiftAndLLVM:
+                let mergeSummaryCmdName = buildProduct.product
+                    .getLLBuildMergedModuleSummaryCmdName(config: buildConfig)
+                manifest.addShellCmd(
+                    name: mergeSummaryCmdName,
+                    description: "Merging module summary \(buildProduct.binary.prettyPath())",
+                    inputs: buildProduct.ltoIntermediates.map({ Node.file($0.summary) }),
+                    outputs: [.file(buildProduct.mergedSummaryPath)],
+                    args: buildProduct.mergeSummaryArguments()
+                )
+                for intermediate in buildProduct.ltoIntermediates {
+                    let dependency = intermediate.sib.basenameWithoutExt
+                    let cmdName = buildProduct.product.getLLBuildCompileFromSibCmdName(
+                        config: buildConfig, dependency: dependency
+                    )
+                    let object = intermediate.getObjectOutput(parent: buildProduct)
+                    manifest.addShellCmd(
+                        name: cmdName,
+                        description: "Lowering SIB \(dependency)",
+                        inputs: [.file(intermediate.sib), .file(buildProduct.mergedSummaryPath)],
+                        outputs: [.file(object)],
+                        args: buildProduct.lowerSIBArguments(intermediate, objectOutput: object)
+                    )
+                }
+                let inputs = buildProduct.objects + buildProduct.dylibs.map({ $0.binary })
+                manifest.addShellCmd(
+                    name: cmdName,
+                    description: "Linking \(buildProduct.binary.prettyPath())",
+                    inputs: inputs.map(Node.file),
+                    outputs: [.file(buildProduct.binary)],
+                    args: buildProduct.linkArguments()
+                )
+            case .none, .LLVM:
+                let inputs = buildProduct.objects + buildProduct.dylibs.map({ $0.binary })
 
-            manifest.addShellCmd(
-                name: cmdName,
-                description: "Linking \(buildProduct.binary.prettyPath())",
-                inputs: inputs.map(Node.file),
-                outputs: [.file(buildProduct.binary)],
-                args: buildProduct.linkArguments()
-            )
+                manifest.addShellCmd(
+                    name: cmdName,
+                    description: "Linking \(buildProduct.binary.prettyPath())",
+                    inputs: inputs.map(Node.file),
+                    outputs: [.file(buildProduct.binary)],
+                    args: buildProduct.linkArguments()
+                )
+            }
         }
 
         // Create a phony node to represent the entire target.
@@ -827,6 +888,14 @@ extension ResolvedProduct {
 
     public func getCommandName(config: String) -> String {
         return "C." + getLLBuildTargetName(config: config)
+    }
+
+    public func getLLBuildMergedModuleSummaryCmdName(config: String) -> String {
+        return "\(name)-\(config).merged-module-summary"
+    }
+
+    public func getLLBuildCompileFromSibCmdName(config: String, dependency: String) -> String {
+        return "\(name)-\(dependency)-\(config).o"
     }
 }
 
