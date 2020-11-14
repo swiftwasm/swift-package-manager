@@ -356,6 +356,11 @@ final class PackageCollectionsTests: XCTestCase {
     }
 
     func testListPerformance() throws {
+        #if ENABLE_COLLECTION_PERF_TESTS
+        #else
+        try XCTSkipIf(true)
+        #endif
+
         let configuration = PackageCollections.Configuration()
         let storage = makeMockStorage()
         defer { XCTAssertNoThrow(try storage.close()) }
@@ -379,7 +384,7 @@ final class PackageCollectionsTests: XCTestCase {
         let start = Date()
         let list = try tsc_await { callback in packageCollections.listCollections(callback: callback) }
         XCTAssertEqual(list.count, mockCollections.count, "list count should match")
-        let delta = start.distance(to: Date())
+        let delta = Date().timeIntervalSince(start)
         XCTAssert(delta < 1.0, "should list quickly, took \(delta)")
     }
 
@@ -488,6 +493,11 @@ final class PackageCollectionsTests: XCTestCase {
     }
 
     func testPackageSearchPerformance() throws {
+        #if ENABLE_COLLECTION_PERF_TESTS
+        #else
+        try XCTSkipIf(true)
+        #endif
+
         let configuration = PackageCollections.Configuration()
         let storage = makeMockStorage()
         defer { XCTAssertNoThrow(try storage.close()) }
@@ -511,7 +521,7 @@ final class PackageCollectionsTests: XCTestCase {
         let repoName = mockCollections.last!.packages.last!.repository.basename
         let searchResult = try tsc_await { callback in packageCollections.findPackages(repoName, callback: callback) }
         XCTAssert(searchResult.items.count > 0, "should get results")
-        let delta = start.distance(to: Date())
+        let delta = Date().timeIntervalSince(start)
         XCTAssert(delta < 1.0, "should search quickly, took \(delta)")
     }
 
@@ -594,6 +604,11 @@ final class PackageCollectionsTests: XCTestCase {
     }
 
     func testTargetsSearchPerformance() throws {
+        #if ENABLE_COLLECTION_PERF_TESTS
+        #else
+        try XCTSkipIf(true)
+        #endif
+
         let configuration = PackageCollections.Configuration()
         let storage = makeMockStorage()
         defer { XCTAssertNoThrow(try storage.close()) }
@@ -617,7 +632,7 @@ final class PackageCollectionsTests: XCTestCase {
         let targetName = mockCollections.last!.packages.last!.versions.last!.targets.last!.name
         let searchResult = try tsc_await { callback in packageCollections.findTargets(targetName, searchType: .exactMatch, callback: callback) }
         XCTAssert(searchResult.items.count > 0, "should get results")
-        let delta = start.distance(to: Date())
+        let delta = Date().timeIntervalSince(start)
         XCTAssert(delta < 1.0, "should search quickly, took \(delta)")
     }
 
@@ -1003,6 +1018,11 @@ final class PackageCollectionsTests: XCTestCase {
     }
 
     func testFetchMetadataPerformance() throws {
+        #if ENABLE_COLLECTION_PERF_TESTS
+        #else
+        try XCTSkipIf(true)
+        #endif
+
         let configuration = PackageCollections.Configuration()
         let storage = makeMockStorage()
         defer { XCTAssertNoThrow(try storage.close()) }
@@ -1026,7 +1046,7 @@ final class PackageCollectionsTests: XCTestCase {
         let start = Date()
         let metadata = try tsc_await { callback in packageCollections.getPackageMetadata(mockPackage.reference, callback: callback) }
         XCTAssertNotNil(metadata)
-        let delta = start.distance(to: Date())
+        let delta = Date().timeIntervalSince(start)
         XCTAssert(delta < 1.0, "should fetch quickly, took \(delta)")
     }
 
