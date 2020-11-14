@@ -657,6 +657,7 @@ public final class SwiftTargetBuildDescription {
         args += activeCompilationConditions
         args += additionalFlags
         args += moduleCacheArgs
+        args += stdlibArguments
         args += buildParameters.sanitizers.compileSwiftFlags()
         args += ["-parseable-output"]
 
@@ -778,6 +779,7 @@ public final class SwiftTargetBuildDescription {
         result += activeCompilationConditions
         result += additionalFlags
         result += moduleCacheArgs
+        result += stdlibArguments
         result += self.buildSettingsFlags()
 
         return result
@@ -826,6 +828,7 @@ public final class SwiftTargetBuildDescription {
         result += activeCompilationConditions
         result += additionalFlags
         result += moduleCacheArgs
+        result += stdlibArguments
         result += buildParameters.sanitizers.compileSwiftFlags()
         result += self.buildSettingsFlags()
         result += buildParameters.swiftCompilerFlags
@@ -1045,6 +1048,15 @@ public final class SwiftTargetBuildDescription {
     /// Module cache arguments.
     private var moduleCacheArgs: [String] {
         return ["-module-cache-path", buildParameters.moduleCache.pathString]
+    }
+
+    private var stdlibArguments: [String] {
+        if buildParameters.shouldLinkStaticSwiftStdlib &&
+            buildParameters.triple.isSupportingStaticStdlib {
+            return ["-static-stdlib"]
+        } else {
+            return []
+        }
     }
 }
 
@@ -1268,7 +1280,7 @@ public final class ProductBuildDescription {
             if buildParameters.shouldLinkStaticSwiftStdlib {
                 if buildParameters.triple.isDarwin() {
                     diagnostics.emit(.swiftBackDeployError)
-                } else if buildParameters.triple.isLinux() || buildParameters.triple.arch == .wasm32 {
+                } else if buildParameters.triple.isSupportingStaticStdlib {
                     args += ["-static-stdlib"]
                 }
             }
@@ -2082,5 +2094,11 @@ fileprivate extension Triple.OS {
         case .macOS:
             return "macos"
         }
+    }
+}
+
+fileprivate extension Triple {
+    var isSupportingStaticStdlib: Bool {
+        isLinux() || arch == .wasm32
     }
 }
