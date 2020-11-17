@@ -851,9 +851,7 @@ public final class SwiftTargetBuildDescription {
             result.append("-parse-as-library")
         }
 
-        for source in target.sources.paths {
-            result.append(source.pathString)
-        }
+        result.append(contentsOf: sources.map { $0.pathString })
 
         // FIXME: Support partial sib and bc emission
         result.append("-whole-module-optimization")
@@ -876,6 +874,7 @@ public final class SwiftTargetBuildDescription {
         result += buildParameters.targetTripleArgs(for: target)
         result += ["-swift-version", swiftVersion.rawValue]
 
+        result += buildParameters.indexStoreArguments(for: target)
         result += buildParameters.toolchain.extraSwiftCFlags
         result += optimizationArguments
         result += testingArguments
@@ -884,6 +883,7 @@ public final class SwiftTargetBuildDescription {
         result += activeCompilationConditions
         result += additionalFlags
         result += moduleCacheArgs
+        result += stdlibArguments
         result += buildParameters.sanitizers.compileSwiftFlags()
         result += self.buildSettingsFlags()
         result += buildParameters.swiftCompilerFlags
