@@ -851,9 +851,7 @@ public final class SwiftTargetBuildDescription {
             result.append("-parse-as-library")
         }
 
-        for source in target.sources.paths {
-            result.append(source.pathString)
-        }
+        result.append(contentsOf: sources.map { $0.pathString })
 
         // FIXME: Support partial sib and bc emission
         result.append("-whole-module-optimization")
