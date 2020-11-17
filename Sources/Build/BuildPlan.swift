@@ -876,6 +876,7 @@ public final class SwiftTargetBuildDescription {
         result += buildParameters.targetTripleArgs(for: target)
         result += ["-swift-version", swiftVersion.rawValue]
 
+        result += buildParameters.indexStoreArguments(for: target)
         result += buildParameters.toolchain.extraSwiftCFlags
         result += optimizationArguments
         result += testingArguments
@@ -884,6 +885,7 @@ public final class SwiftTargetBuildDescription {
         result += activeCompilationConditions
         result += additionalFlags
         result += moduleCacheArgs
+        result += stdlibArguments
         result += buildParameters.sanitizers.compileSwiftFlags()
         result += self.buildSettingsFlags()
         result += buildParameters.swiftCompilerFlags
