@@ -11,15 +11,16 @@ add_library(PackageCollections
   Model/Collection.swift
   Model/License.swift
   Model/Package.swift
-  Model/Profile.swift
   Model/Search.swift
   Model/TargetListResult.swift
   Providers/GitHubPackageMetadataProvider.swift
   Providers/JSONPackageCollectionProvider.swift
   Providers/PackageCollectionProvider.swift
   Providers/PackageMetadataProvider.swift
-  Storage/PackageCollectionsProfileStorage.swift
+  Storage/FilePackageCollectionsSourcesStorage.swift
+  Storage/PackageCollectionsSourcesStorage.swift
   Storage/PackageCollectionsStorage.swift
+  Storage/SQLitePackageCollectionsStorage.swift
   API.swift
   PackageCollections.swift
   PackageCollections+Configuration.swift
