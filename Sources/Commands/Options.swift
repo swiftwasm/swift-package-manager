@@ -248,7 +248,7 @@ public struct SwiftToolOptions: ParsableArguments {
     var ltoMode: BuildParameters.LTOMode?
 
     /// Whether to enable test discovery on platforms without Objective-C runtime.
-    @Flag(help: "Enable test discovery on platforms without Objective-C runtime")
+    @Flag(help: .hidden)
     var enableTestDiscovery: Bool = false
 
     /// Whether to enable llbuild manifest caching.

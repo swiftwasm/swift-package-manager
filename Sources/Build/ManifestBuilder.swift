@@ -74,7 +74,7 @@ public class LLBuildManifestBuilder {
             }
         }
 
-        addTestFileGenerationCommand()
+        addTestManifestGenerationCommand()
 
         // Create command for all products in the plan.
         for (_, description) in plan.productMap {
@@ -753,7 +753,7 @@ extension LLBuildManifestBuilder {
 // MARK:- Test File Generation
 
 extension LLBuildManifestBuilder {
-    fileprivate func addTestFileGenerationCommand() {
+    fileprivate func addTestManifestGenerationCommand() {
         for target in plan.targets {
             guard case .swift(let target) = target,
                 target.isTestTarget,
