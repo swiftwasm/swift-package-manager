@@ -128,13 +128,7 @@ final class TestDiscoveryCommand: CustomLLBuildCommand {
             stream <<< "tests += __allTests_\(module)()" <<< "\n"
         }
         stream <<< "\n"
-        if ctx.buildParameters.triple.isWASI() {
-            stream <<< "let encoder = JSONEncoder()" <<< "\n"
-            stream <<< "XCTMain(tests, arguments: CommandLine.arguments, "
-                <<< "observation: CodableObserver { try print(encoder.encode($0)) })" <<< "\n"
-        } else {
-            stream <<< "XCTMain(tests)" <<< "\n"
-        }
+        stream <<< "XCTMain(tests)" <<< "\n"
 
         stream.flush()
     }
