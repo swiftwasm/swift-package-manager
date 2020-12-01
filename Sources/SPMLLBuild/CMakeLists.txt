@@ -12,8 +12,10 @@ add_library(SPMLLBuild
 set_target_properties(SPMLLBuild PROPERTIES
   INTERFACE_INCLUDE_DIRECTORIES ${CMAKE_Swift_MODULE_DIRECTORY})
 target_link_libraries(SPMLLBuild PUBLIC
+  Basics
   TSCBasic
   TSCUtility
+  Basics
   llbuildSwift)
 
 if(USE_CMAKE_INSTALL)

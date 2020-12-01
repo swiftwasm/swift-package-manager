@@ -20,26 +20,20 @@ struct FilePackageCollectionsSourcesStorage: PackageCollectionsSourcesStorage {
     let fileSystem: FileSystem
     let path: AbsolutePath
 
+    private let diagnosticsEngine: DiagnosticsEngine?
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
     private let queue = DispatchQueue(label: "org.swift.swiftpm.FilePackageCollectionsSourcesStorage")
 
-    init(fileSystem: FileSystem = localFileSystem, path: AbsolutePath? = nil) {
+    init(fileSystem: FileSystem = localFileSystem, path: AbsolutePath? = nil, diagnosticsEngine: DiagnosticsEngine? = nil) {
         self.fileSystem = fileSystem
 
         let name = "collections"
         self.path = path ?? fileSystem.dotSwiftPM.appending(components: "config", "\(name).json")
-
-        self.encoder = JSONEncoder()
-        if #available(macOS 10.15, *) {
-            #if os(macOS)
-            encoder.outputFormatting = [.sortedKeys, .prettyPrinted, .withoutEscapingSlashes]
-            #else // `.withoutEscapingSlashes` is not in 5.3 on non-Darwin platforms
-            encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
-            #endif
-        }
-        self.decoder = JSONDecoder()
+        self.diagnosticsEngine = diagnosticsEngine
+        self.encoder = JSONEncoder.makeWithDefaults()        
+        self.decoder = JSONDecoder.makeWithDefaults()
     }
 
     func list(callback: @escaping (Result<[Model.CollectionSource], Error>) -> Void) {
