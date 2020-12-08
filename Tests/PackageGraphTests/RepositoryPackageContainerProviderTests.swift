@@ -42,7 +42,7 @@ private class MockRepository: Repository {
         return PackageReference(identity: PackageIdentity(url: self.url), path: self.url)
     }
 
-    var tags: [String] {
+    func tags() throws -> [String] {
         return self.versions.keys.map { String(describing: $0) }
     }
 
@@ -123,8 +123,6 @@ private class MockRepositories: RepositoryProvider {
 }
 
 private class MockResolverDelegate: RepositoryManagerDelegate {
-    typealias Identifier = RepositoryPackageContainer.Identifier
-
     var fetched = [RepositorySpecifier]()
 
     func fetchingWillBegin(handle: RepositoryManager.RepositoryHandle, fetchDetails: RepositoryManager.FetchDetails?) {
@@ -181,7 +179,7 @@ class RepositoryPackageContainerProviderTests: XCTestCase {
 
         let ref = PackageReference(identity: PackageIdentity(path: repoPath), path: repoPath.pathString)
         let container = try tsc_await { provider.getContainer(for: ref, skipUpdate: false, completion: $0) }
-        let v = container.versions(filter: { _ in true }).map { $0 }
+        let v = try container.versions(filter: { _ in true }).map { $0 }
         XCTAssertEqual(v, ["2.0.3", "1.0.3", "1.0.2", "1.0.1", "1.0.0"])
     }
 
@@ -236,7 +234,7 @@ class RepositoryPackageContainerProviderTests: XCTestCase {
             let provider = createProvider(ToolsVersion(version: "4.0.0"))
             let ref = PackageReference(identity: PackageIdentity(url: specifier.url), path: specifier.url)
             let container = try tsc_await { provider.getContainer(for: ref, skipUpdate: false, completion: $0) }
-            let v = container.versions(filter: { _ in true }).map { $0 }
+            let v = try container.versions(filter: { _ in true }).map { $0 }
             XCTAssertEqual(v, ["1.0.1"])
         }
 
@@ -245,7 +243,7 @@ class RepositoryPackageContainerProviderTests: XCTestCase {
             let ref = PackageReference(identity: PackageIdentity(url: specifier.url), path: specifier.url)
             let container = try tsc_await { provider.getContainer(for: ref, skipUpdate: false, completion: $0) }
             XCTAssertEqual((container as! RepositoryPackageContainer).validToolsVersionsCache, [:])
-            let v = container.versions(filter: { _ in true }).map { $0 }
+            let v = try container.versions(filter: { _ in true }).map { $0 }
             XCTAssertEqual((container as! RepositoryPackageContainer).validToolsVersionsCache, ["1.0.1": true, "1.0.0": false, "1.0.3": true, "1.0.2": true])
             XCTAssertEqual(v, ["1.0.3", "1.0.2", "1.0.1"])
         }
@@ -254,7 +252,7 @@ class RepositoryPackageContainerProviderTests: XCTestCase {
             let provider = createProvider(ToolsVersion(version: "3.0.0"))
             let ref = PackageReference(identity: PackageIdentity(url: specifier.url), path: specifier.url)
             let container = try tsc_await { provider.getContainer(for: ref, skipUpdate: false, completion: $0) }
-            let v = container.versions(filter: { _ in true }).map { $0 }
+            let v = try container.versions(filter: { _ in true }).map { $0 }
             XCTAssertEqual(v, [])
         }
 
@@ -310,7 +308,7 @@ class RepositoryPackageContainerProviderTests: XCTestCase {
         )
         let ref = PackageReference(identity: PackageIdentity(path: repoPath), path: repoPath.pathString)
         let container = try tsc_await { provider.getContainer(for: ref, skipUpdate: false, completion: $0) }
-        let v = container.versions(filter: { _ in true }).map { $0 }
+        let v = try container.versions(filter: { _ in true }).map { $0 }
         XCTAssertEqual(v, ["1.0.4-alpha", "1.0.2-dev.2", "1.0.2-dev", "1.0.1", "1.0.0", "1.0.0-beta.1", "1.0.0-alpha.1"])
     }
 
@@ -350,7 +348,7 @@ class RepositoryPackageContainerProviderTests: XCTestCase {
         )
         let ref = PackageReference(identity: PackageIdentity(path: repoPath), path: repoPath.pathString)
         let container = try tsc_await { provider.getContainer(for: ref, skipUpdate: false, completion: $0) }
-        let v = container.versions(filter: { _ in true }).map { $0 }
+        let v = try container.versions(filter: { _ in true }).map { $0 }
         XCTAssertEqual(v, ["2.0.1", "1.0.4", "1.0.2", "1.0.1", "1.0.0"])
     }
 
@@ -384,7 +382,7 @@ class RepositoryPackageContainerProviderTests: XCTestCase {
             "Bar3": .specific(["Bar1", "Bar3"]),
         ]
         let v5Constraints = dependencies.map {
-            RepositoryPackageConstraint(
+            PackageContainerConstraint(
                 container: $0.createPackageRef(mirrors: mirrors),
                 requirement: $0.requirement.toConstraintRequirement(),
                 products: v5ProductMapping[$0.name]!
@@ -396,7 +394,7 @@ class RepositoryPackageContainerProviderTests: XCTestCase {
             "Bar3": .specific(["Bar3"]),
         ]
         let v5_2Constraints = dependencies.map {
-            RepositoryPackageConstraint(
+            PackageContainerConstraint(
                 container: $0.createPackageRef(mirrors: mirrors),
                 requirement: $0.requirement.toConstraintRequirement(),
                 products: v5_2ProductMapping[$0.name]!

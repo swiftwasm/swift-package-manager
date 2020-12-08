@@ -48,11 +48,11 @@ public protocol PackageContainer {
     /// The list will be returned in sorted order, with the latest version *first*.
     /// All versions will not be requested at once. Resolver will request the next one only
     /// if the previous one did not satisfy all constraints.
-    func versions(filter isIncluded: (Version) -> Bool) -> AnySequence<Version>
+    func versions(filter isIncluded: (Version) -> Bool) throws -> AnySequence<Version>
 
     /// Get the list of versions in the repository sorted in the reverse order, that is the latest
     /// version appears first.
-    var reversedVersions: [Version] { get }
+    func reversedVersions() throws -> [Version]
 
     // FIXME: We should perhaps define some particularly useful error codes
     // here, so the resolver can handle errors more meaningfully.
@@ -134,74 +134,4 @@ public protocol PackageContainerProvider {
         skipUpdate: Bool,
         completion: @escaping (Result<PackageContainer, Swift.Error>) -> Void
     )
-}
-
-// MARK: -
-
-/// Base class for the package container.
-public class BasePackageContainer: PackageContainer {
-    public typealias Identifier = PackageReference
-
-    public let identifier: Identifier
-
-    let mirrors: DependencyMirrors
-
-    /// The manifest loader.
-    let manifestLoader: ManifestLoaderProtocol
-
-    /// The tools version loader.
-    let toolsVersionLoader: ToolsVersionLoaderProtocol
-
-    /// The current tools version in use.
-    let currentToolsVersion: ToolsVersion
-
-    public func versions(filter isIncluded: (Version) -> Bool) -> AnySequence<Version> {
-        fatalError("This should never be called")
-    }
-
-    public var reversedVersions: [Version] {
-        fatalError("This should never be called")
-    }
-
-    public func getDependencies(at version: Version, productFilter: ProductFilter) throws -> [PackageContainerConstraint] {
-        fatalError("This should never be called")
-    }
-
-    public func getDependencies(at revision: String, productFilter: ProductFilter) throws -> [PackageContainerConstraint] {
-        fatalError("This should never be called")
-    }
-
-    public func getUnversionedDependencies(productFilter: ProductFilter) throws -> [PackageContainerConstraint] {
-        fatalError("This should never be called")
-    }
-
-    public func getUpdatedIdentifier(at boundVersion: BoundVersion) throws -> Identifier {
-        fatalError("This should never be called")
-    }
-
-    public func isToolsVersionCompatible(at version: Version) -> Bool {
-        fatalError("This should never be called")
-    }
-    
-    public func toolsVersion(for version: Version) throws -> ToolsVersion {
-        fatalError("This should never be called")
-    }
-
-    init(
-        _ identifier: Identifier,
-        mirrors: DependencyMirrors,
-        manifestLoader: ManifestLoaderProtocol,
-        toolsVersionLoader: ToolsVersionLoaderProtocol,
-        currentToolsVersion: ToolsVersion
-    ) {
-        self.identifier = identifier
-        self.mirrors = mirrors
-        self.manifestLoader = manifestLoader
-        self.toolsVersionLoader = toolsVersionLoader
-        self.currentToolsVersion = currentToolsVersion
-    }
-
-    public var isRemoteContainer: Bool? {
-        return nil
-    }
 }

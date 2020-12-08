@@ -460,7 +460,7 @@ extension Workspace {
         } else {
             requirement = currentState.requirement
         }
-        let constraint = RepositoryPackageConstraint(
+        let constraint = PackageContainerConstraint(
                 // If any products are required, the rest of the package graph will supply those constraints.
                 container: dependency.packageRef, requirement: requirement, products: .nothing)
 
@@ -570,10 +570,6 @@ extension Workspace {
         // Create constraints based on root manifest and pins for the update resolution.
         updateConstraints += graphRoot.constraints(mirrors: config.mirrors)
 
-        // Resolve the dependencies.
-        let resolver = createResolver()
-        activeResolver = resolver
-
         let pinsMap: PinsStore.PinsMap
         if packages.isEmpty {
             // No input packages so we have to do a full update. Set pins map to empty.
@@ -583,11 +579,14 @@ extension Workspace {
             // the pins for the input packages so only those packages are updated.
             pinsMap = pinsStore.pinsMap.filter{ !packages.contains($0.value.packageRef.name) }
         }
+        
+        // Resolve the dependencies.
+        let resolver = self.createResolver(pinsMap: pinsMap)
+        activeResolver = resolver
 
         let updateResults = resolveDependencies(
             resolver: resolver,
-            dependencies: updateConstraints,
-            pinsMap: pinsMap,
+            constraints: updateConstraints,
             diagnostics: diagnostics
         )
 
@@ -1121,8 +1120,8 @@ extension Workspace {
         }
 
         /// Returns constraints of the dependencies, including edited package constraints.
-        func dependencyConstraints() -> [RepositoryPackageConstraint] {
-            var allConstraints = [RepositoryPackageConstraint]()
+        func dependencyConstraints() -> [PackageContainerConstraint] {
+            var allConstraints = [PackageContainerConstraint]()
 
             for (externalManifest, managedDependency, productFilter) in dependencies {
                 // For edited packages, add a constraint with unversioned requirement so the
@@ -1136,7 +1135,7 @@ extension Workspace {
                         path: managedDependency.packageRef.path,
                         kind: .local
                     )
-                    let constraint = RepositoryPackageConstraint(
+                    let constraint = PackageContainerConstraint(
                         container: ref,
                         requirement: .unversioned,
                         products: productFilter)
@@ -1154,8 +1153,8 @@ extension Workspace {
 
         // FIXME: @testable(internal)
         /// Returns a list of constraints for all 'edited' package.
-        public func editedPackagesConstraints() -> [RepositoryPackageConstraint] {
-            var constraints = [RepositoryPackageConstraint]()
+        public func editedPackagesConstraints() -> [PackageContainerConstraint] {
+            var constraints = [PackageContainerConstraint]()
 
             for (_, managedDependency, productFilter) in dependencies {
                 switch managedDependency.state {
@@ -1169,7 +1168,7 @@ extension Workspace {
                     path: workspace.path(for: managedDependency).pathString,
                     kind: .local
                 )
-                let constraint = RepositoryPackageConstraint(
+                let constraint = PackageContainerConstraint(
                     container: ref,
                     requirement: .unversioned,
                     products: productFilter)
@@ -1699,7 +1698,7 @@ extension Workspace {
         root: PackageGraphRootInput,
         explicitProduct: String? = nil,
         forceResolution: Bool,
-        extraConstraints: [RepositoryPackageConstraint] = [],
+        extraConstraints: [PackageContainerConstraint] = [],
         diagnostics: DiagnosticsEngine,
         retryOnPackagePathMismatch: Bool = true
     ) -> DependencyManifests {
@@ -1755,18 +1754,17 @@ extension Workspace {
         }
 
         // Create the constraints.
-        var constraints = [RepositoryPackageConstraint]()
+        var constraints = [PackageContainerConstraint]()
         constraints += currentManifests.editedPackagesConstraints()
         constraints += graphRoot.constraints(mirrors: config.mirrors) + extraConstraints
 
         // Perform dependency resolution.
-        let resolver = createResolver()
+        let resolver = createResolver(pinsMap: pinsStore.pinsMap)
         activeResolver = resolver
 
         let result = resolveDependencies(
             resolver: resolver,
-            dependencies: constraints,
-            pinsMap: pinsStore.pinsMap,
+            constraints: constraints,
             diagnostics: diagnostics)
         activeResolver = nil
 
@@ -1868,7 +1866,7 @@ extension Workspace {
         root: PackageGraphRoot,
         dependencyManifests: DependencyManifests,
         pinsStore: PinsStore,
-        extraConstraints: [RepositoryPackageConstraint] = []
+        extraConstraints: [PackageContainerConstraint] = []
     ) -> ResolutionPrecomputationResult {
         let constraints =
             root.constraints(mirrors: config.mirrors) +
@@ -1883,8 +1881,8 @@ extension Workspace {
             mirrors: config.mirrors
         )
 
-        let resolver = PubgrubDependencyResolver(precomputationProvider)
-        let result = resolver.solve(dependencies: constraints, pinsMap: pinsStore.pinsMap)
+        let resolver = PubgrubDependencyResolver(provider: precomputationProvider, pinsMap: pinsStore.pinsMap)
+        let result = resolver.solve(constraints: constraints)
 
         switch result {
         case .success:
@@ -2130,11 +2128,12 @@ extension Workspace {
     }
 
     /// Creates resolver for the workspace.
-    fileprivate func createResolver() -> PubgrubDependencyResolver {
+    fileprivate func createResolver(pinsMap: PinsStore.PinsMap) -> PubgrubDependencyResolver {
         let traceFile = enableResolverTrace ? self.dataPath.appending(components: "resolver.trace") : nil
 
         return PubgrubDependencyResolver(
-            containerProvider,
+            provider: containerProvider,
+            pinsMap: pinsMap,
             isPrefetchingEnabled: isResolverPrefetchingEnabled,
             skipUpdate: skipUpdate, traceFile: traceFile
         )
@@ -2143,13 +2142,12 @@ extension Workspace {
     /// Runs the dependency resolver based on constraints provided and returns the results.
     fileprivate func resolveDependencies(
         resolver: PubgrubDependencyResolver,
-        dependencies: [RepositoryPackageConstraint],
-        pinsMap: PinsStore.PinsMap,
+        constraints: [PackageContainerConstraint],
         diagnostics: DiagnosticsEngine
     ) -> [(container: PackageReference, binding: BoundVersion, products: ProductFilter)] {
 
         os_signpost(.begin, log: .swiftpm, name: SignpostName.resolution)
-        let result = resolver.solve(dependencies: dependencies, pinsMap: pinsMap)
+        let result = resolver.solve(constraints: constraints)
         os_signpost(.end, log: .swiftpm, name: SignpostName.resolution)
 
         // Take an action based on the result.
@@ -2374,7 +2372,7 @@ extension Workspace {
             // this?
             let container = try tsc_await { containerProvider.getContainer(for: package, skipUpdate: true, completion: $0) } as! RepositoryPackageContainer
             guard let tag = container.getTag(for: version) else {
-                throw StringError("Internal error: please file a bug at https://bugs.swift.org with this info -- unable to get tag for \(package) \(version); available versions \(container.reversedVersions)")
+                throw StringError("Internal error: please file a bug at https://bugs.swift.org with this info -- unable to get tag for \(package) \(version); available versions \(try container.reversedVersions())")
             }
             let revision = try container.getRevision(forTag: tag)
             checkoutState = CheckoutState(revision: revision, version: version)
