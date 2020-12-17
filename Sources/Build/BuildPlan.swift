@@ -1077,30 +1077,66 @@ public final class ProductBuildDescription {
     // Computed during build planning.
     public fileprivate(set) var objects = SortedArray<AbsolutePath>()
 
-    public struct LTOIntermediate: Comparable, Equatable {
-        public var description: SwiftTargetBuildDescription
-        public var summary: AbsolutePath { description.moduleSummaryOutputPath }
-        public var sib: AbsolutePath { description.sibOutputPath }
-        public var mode: BuildParameters.LTOMode
+    public enum LTOIntermediate: Comparable, Equatable {
+        case target(description: SwiftTargetBuildDescription, mode: BuildParameters.LTOMode)
+        case stdlib(triple: Triple, toolchain: Toolchain, mode: BuildParameters.LTOMode)
+        init(description: SwiftTargetBuildDescription, mode: BuildParameters.LTOMode) {
+            self = .target(description: description, mode: mode)
+        }
+
+        public var summary: AbsolutePath {
+            switch self {
+            case let .target(description, _):
+                return description.moduleSummaryOutputPath
+            case let .stdlib(triple, toolchain, _):
+                // FIXME
+                let shouldUseStatic = triple.arch == .wasm32
+                return toolchain.getSwiftStdlibModule(triple: triple, staticStdlib: shouldUseStatic)
+                    .appending(components: "\(triple.tripleString).swiftmodulesummary")
+            }
+        }
+        public var sib: AbsolutePath {
+            switch self {
+            case let .target(description, _):
+                return description.sibOutputPath
+            case let .stdlib(triple, toolchain, _):
+                // FIXME
+                let shouldUseStatic = triple.arch == .wasm32
+                return toolchain.getSwiftStdlibModule(triple: triple, staticStdlib: shouldUseStatic)
+                    .appending(components: "\(triple.tripleString).sib")
+            }
+        }
 
         public func getObjectOutput(parent: ProductBuildDescription) -> AbsolutePath {
-            let base = description.target.c99name
-            let ext: String
-            switch mode {
-            case .LLVM, .SwiftAndLLVM:
-                ext = "bc"
-            case .Swift:
-                ext = "o"
+            func objectExtension(mode: BuildParameters.LTOMode) -> String {
+                switch mode {
+                case .LLVM, .SwiftAndLLVM: return "bc"
+                case .Swift: return "o"
+                }
             }
-            return description.moduleSummaryOutputPath
-                .appending(components: "..", base + "-" + parent.product.name + ".\(ext)")
+            switch self {
+            case let .target(description, mode):
+                let base = description.target.c99name
+                return description.moduleSummaryOutputPath
+                    .appending(components: "..", base + "-" + parent.product.name + ".\(objectExtension(mode: mode))")
+            case let .stdlib(_, _, mode):
+                return parent.buildParameters.buildPath
+                    .appending(components: "Swift-\(parent.product.name).\(objectExtension(mode: mode))")
+            }
         }
 
+        var moduleC99name: String {
+            switch self {
+            case let .target(description, _):
+                return description.target.c99name
+            case .stdlib: return "Swift"
+            }
+        }
         public static func < (lhs: LTOIntermediate, rhs: LTOIntermediate) -> Bool {
-            lhs.description.target.c99name < rhs.description.target.c99name
+            lhs.moduleC99name < rhs.moduleC99name
         }
         public static func == (lhs: LTOIntermediate, rhs: LTOIntermediate) -> Bool {
-            lhs.description.target == rhs.description.target
+            lhs.moduleC99name == rhs.moduleC99name
         }
     }
     /// TODO
@@ -1175,47 +1211,91 @@ public final class ProductBuildDescription {
         let mode = buildParameters.ltoMode!
         assert(mode != .LLVM)
 
-        let target = intermediate.description.target
-        var result: [String] = []
-        result.append(buildParameters.toolchain.swiftCompiler.pathString)
+        switch intermediate {
+        case let .target(description, _):
+            let target = description.target
+            var result: [String] = []
+            result.append(buildParameters.toolchain.swiftCompiler.pathString)
 
-        result.append("-module-name")
-        result.append(target.c99name)
+            result.append("-module-name")
+            result.append(intermediate.moduleC99name)
 
-        if target.type == .library || target.type == .test {
-            result.append("-parse-as-library")
+            if target.type == .library || target.type == .test {
+                result.append("-parse-as-library")
+            }
+
+            switch mode {
+            case .Swift:
+                result.append("-c")
+            case .SwiftAndLLVM:
+                result.append("-emit-bc")
+            default:
+                fatalError("unreachable")
+            }
+            result.append(intermediate.sib.pathString)
+            result.append("-module-summary-path")
+            result.append(mergedSummaryPath.pathString)
+            result.append("-whole-module-optimization")
+            result.append("-o")
+            result.append(objectOutput.pathString)
+            if buildParameters.shouldMergeStdlibModuleSummary {
+                result += ["-no-stdlib-link"]
+            }
+
+            result.append("-I")
+            result.append(buildParameters.buildPath.pathString)
+
+            let swiftVersion = (target.underlyingTarget as! SwiftTarget).swiftVersion
+            result += buildParameters.targetTripleArgs(for: target)
+            result += ["-swift-version", swiftVersion.rawValue]
+
+            result += buildParameters.toolchain.extraSwiftCFlags
+            result += ["-g"]
+            result += ["-j\(buildParameters.jobs)"]
+            result += description.additionalFlags
+            result += buildParameters.sanitizers.compileSwiftFlags()
+            result += description.buildSettingsFlags()
+            result += buildParameters.swiftCompilerFlags
+            return result
+        case let .stdlib(triple, _, _):
+            var result: [String] = []
+            result.append(buildParameters.toolchain.swiftCompiler.pathString)
+
+            result.append("-module-name")
+            result.append(intermediate.moduleC99name)
+            
+            result.append("-parse-stdlib")
+
+            switch mode {
+            case .Swift:
+                result.append("-c")
+            case .SwiftAndLLVM:
+                result.append("-emit-bc")
+            default:
+                fatalError("unreachable")
+            }
+            result.append(intermediate.sib.pathString)
+            result.append("-module-summary-path")
+            result.append(mergedSummaryPath.pathString)
+            result.append("-o")
+            result.append(objectOutput.pathString)
+
+            result += ["-target", triple.tripleString]
+            result += ["-module-link-name", "swiftCore"]
+            result += ["-swift-version", "5"]
+            result += ["-j\(buildParameters.jobs)"]
+            result += buildParameters.swiftCompilerFlags
+
+            // FIXME(katei): compile options should be propagated through sib or modulesummary
+            result += [
+                "-Xfrontend", "-disable-objc-attr-requires-foundation-module",
+                "-Xfrontend", "-disable-objc-interop",
+                "-Xfrontend", "-enable-library-evolution",
+                "-Xfrontend", "-enforce-exclusivity=unchecked",
+                "-Xfrontend", "-enable-experimental-concise-pound-file",
+            ]
+            return result
         }
-
-        switch mode {
-        case .Swift:
-            result.append("-c")
-        case .SwiftAndLLVM:
-            result.append("-emit-bc")
-        default:
-            fatalError("unreachable")
-        }
-        result.append(intermediate.sib.pathString)
-        result.append("-module-summary-path")
-        result.append(mergedSummaryPath.pathString)
-        result.append("-whole-module-optimization")
-        result.append("-o")
-        result.append(objectOutput.pathString)
-
-        result.append("-I")
-        result.append(buildParameters.buildPath.pathString)
-
-        let swiftVersion = (target.underlyingTarget as! SwiftTarget).swiftVersion
-        result += buildParameters.targetTripleArgs(for: target)
-        result += ["-swift-version", swiftVersion.rawValue]
-
-        result += buildParameters.toolchain.extraSwiftCFlags
-        result += ["-g"]
-        result += ["-j\(buildParameters.jobs)"]
-        result += intermediate.description.additionalFlags
-        result += buildParameters.sanitizers.compileSwiftFlags()
-        result += intermediate.description.buildSettingsFlags()
-        result += buildParameters.swiftCompilerFlags
-        return result
     }
 
     /// The arguments to link and create this product.
@@ -1279,6 +1359,9 @@ public final class ProductBuildDescription {
                 } else if buildParameters.triple.isSupportingStaticStdlib {
                     args += ["-static-stdlib"]
                 }
+            }
+            if buildParameters.shouldMergeStdlibModuleSummary {
+                args += ["-no-stdlib-link"]
             }
             args += ["-emit-executable"]
         }
@@ -1687,6 +1770,16 @@ public class BuildPlan {
             }
         }
 
+        if let ltoMode = buildParameters.ltoMode,
+           buildParameters.shouldMergeStdlibModuleSummary,
+           ltoMode == .Swift || ltoMode == .SwiftAndLLVM {
+            let intermediate = ProductBuildDescription.LTOIntermediate
+                .stdlib(triple: buildParameters.triple,
+                        toolchain: buildParameters.toolchain,
+                        mode: ltoMode)
+            buildProduct.ltoIntermediates.insert(intermediate)
+            buildProduct.objects += [intermediate.getObjectOutput(parent: buildProduct)]
+        }
         buildProduct.staticTargets = dependencies.staticTargets
         buildProduct.dylibs = dependencies.dylibs.map({ productMap[$0]! })
         buildProduct.libraryBinaryPaths = dependencies.libraryBinaryPaths

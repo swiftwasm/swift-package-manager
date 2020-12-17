@@ -656,6 +656,7 @@ public class SwiftTool {
                 enableCodeCoverage: options.shouldEnableCodeCoverage,
                 indexStoreMode: options.indexStore,
                 ltoMode: options.ltoMode,
+                shouldMergeStdlibModuleSummary: options.shouldMergeStdlibModuleSummary,
                 enableParseableModuleInterfaces: options.shouldEnableParseableModuleInterfaces,
                 emitSwiftModuleSeparately: options.emitSwiftModuleSeparately,
                 useIntegratedSwiftDriver: options.useIntegratedSwiftDriver,

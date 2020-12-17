@@ -117,6 +117,9 @@ public struct BuildParameters: Encodable {
     /// TOOD
     public var ltoMode: LTOMode?
 
+    /// TODO
+    public var shouldMergeStdlibModuleSummary: Bool
+
     /// Whether to enable code coverage.
     public var enableCodeCoverage: Bool
 
@@ -192,6 +195,7 @@ public struct BuildParameters: Encodable {
         enableCodeCoverage: Bool = false,
         indexStoreMode: IndexStoreMode = .auto,
         ltoMode: LTOMode? = nil,
+        shouldMergeStdlibModuleSummary: Bool = true,
         enableParseableModuleInterfaces: Bool = false,
         emitSwiftModuleSeparately: Bool = false,
         useIntegratedSwiftDriver: Bool = false,
@@ -220,6 +224,7 @@ public struct BuildParameters: Encodable {
         self.enableCodeCoverage = enableCodeCoverage
         self.indexStoreMode = indexStoreMode
         self.ltoMode = ltoMode
+        self.shouldMergeStdlibModuleSummary = shouldMergeStdlibModuleSummary
         self.enableParseableModuleInterfaces = enableParseableModuleInterfaces
         self.emitSwiftModuleSeparately = emitSwiftModuleSeparately
         self.useIntegratedSwiftDriver = useIntegratedSwiftDriver

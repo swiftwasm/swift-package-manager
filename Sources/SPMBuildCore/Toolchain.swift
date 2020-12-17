@@ -9,6 +9,7 @@
 */
 
 import TSCBasic
+import TSCUtility
 import PackageModel
 
 public protocol Toolchain {
@@ -17,6 +18,8 @@ public protocol Toolchain {
 
     /// Path containing the macOS Swift stdlib.
     var macosSwiftStdlib: AbsolutePath { get }
+
+    func getSwiftStdlibModule(triple: Triple, staticStdlib: Bool) -> AbsolutePath
 
     /// Path of the `clang` compiler.
     func getClangCompiler() throws -> AbsolutePath
@@ -43,6 +46,11 @@ extension Toolchain {
 
     public var macosSwiftStdlib: AbsolutePath { 
         return resolveSymlinks(swiftCompiler).appending(RelativePath("../../lib/swift/macosx"))
+    }
+
+    public func getSwiftStdlibModule(triple: Triple, staticStdlib: Bool) -> AbsolutePath {
+        let swiftDir = staticStdlib ? "swift_static" : "swift"
+        return resolveSymlinks(swiftCompiler).appending(RelativePath("../../lib/\(swiftDir)/\(triple.os.rawValue)/Swift.swiftmodule"))
     }
 
     public var toolchainLibDir: AbsolutePath {

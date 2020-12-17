@@ -802,7 +802,7 @@ extension LLBuildManifestBuilder {
                     args: buildProduct.mergeSummaryArguments()
                 )
                 for intermediate in buildProduct.ltoIntermediates {
-                    let dependency = intermediate.sib.basenameWithoutExt
+                    let dependency = intermediate.moduleC99name
                     let cmdName = buildProduct.product.getLLBuildCompileFromSibCmdName(
                         config: buildConfig, dependency: dependency
                     )
