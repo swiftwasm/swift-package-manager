@@ -442,7 +442,7 @@ extension Workspace {
         branch: String? = nil,
         revision: String? = nil,
         diagnostics: DiagnosticsEngine
-    ) {
+    ) throws {
         // Look up the dependency and check if we can pin it.
         guard let dependency = state.dependencies[forNameOrIdentity: packageName] else {
             diagnostics.emit(.dependencyNotFound(packageName: packageName))
@@ -468,7 +468,7 @@ extension Workspace {
                 container: dependency.packageRef, requirement: requirement, products: .nothing)
 
         // Run the resolution.
-        _resolve(root: root, forceResolution: false, extraConstraints: [constraint], diagnostics: diagnostics)
+        try self._resolve(root: root, forceResolution: false, extraConstraints: [constraint], diagnostics: diagnostics)
     }
 
     /// Cleans the build artefacts from workspace data.
@@ -550,7 +550,7 @@ extension Workspace {
         packages: [String] = [],
         diagnostics: DiagnosticsEngine,
         dryRun: Bool = false
-    ) -> [(PackageReference, Workspace.PackageStateChange)]? {
+    ) throws -> [(PackageReference, Workspace.PackageStateChange)]? {
         // Create cache directories.
         createCacheDirectories(with: diagnostics)
 
@@ -559,7 +559,7 @@ extension Workspace {
 
         // Load the current manifests.
         let graphRoot = PackageGraphRoot(input: root, manifests: rootManifests)
-        let currentManifests = loadDependencyManifests(root: graphRoot, diagnostics: diagnostics)
+        let currentManifests = try self.loadDependencyManifests(root: graphRoot, diagnostics: diagnostics)
 
         // Abort if we're unable to load the pinsStore or have any diagnostics.
         guard let pinsStore = diagnostics.wrap({ try self.pinsStore.load() }) else { return nil }
@@ -606,7 +606,7 @@ extension Workspace {
         let packageStateChanges = updateCheckouts(root: graphRoot, updateResults: updateResults, updateBranches: true, diagnostics: diagnostics)
 
         // Load the updated manifests.
-        let updatedDependencyManifests = loadDependencyManifests(root: graphRoot, diagnostics: diagnostics)
+        let updatedDependencyManifests = try self.loadDependencyManifests(root: graphRoot, diagnostics: diagnostics)
 
         // Update the pins store.
         pinAll(
@@ -616,7 +616,7 @@ extension Workspace {
 
         // Update the binary target artifacts.
         let addedOrUpdatedPackages = packageStateChanges.compactMap({ $0.1.isAddedOrUpdated ? $0.0 : nil })
-        updateBinaryArtifacts(
+        try self.updateBinaryArtifacts(
             manifests: updatedDependencyManifests,
             addedOrUpdatedPackages: addedOrUpdatedPackages,
             diagnostics: diagnostics)
@@ -639,7 +639,7 @@ extension Workspace {
         let resources = try UserManifestResources(swiftCompiler: swiftCompiler, swiftCompilerFlags: swiftCompilerFlags)
         let loader = ManifestLoader(manifestResources: resources)
         let workspace = Workspace.create(forRootPackage: packagePath, manifestLoader: loader)
-        return workspace.loadPackageGraph(root: packagePath, diagnostics: diagnostics)
+        return try workspace.loadPackageGraph(rootPath: packagePath, diagnostics: diagnostics)
     }
 
     /// Fetch and load the complete package at the given path.
@@ -648,6 +648,8 @@ extension Workspace {
     /// working checkouts to be resolved, cloned, and checked out.
     ///
     /// - Returns: The loaded package graph.
+    // FIXME: deprecated 12/2020, remove once clients migrate
+    @available(*, deprecated, message: "use throwing variant instead (loadPackageGraph(input:)")
     @discardableResult
     public func loadPackageGraph(
         root: PackageGraphRootInput,
@@ -658,17 +660,36 @@ extension Workspace {
         diagnostics: DiagnosticsEngine,
         xcTestMinimumDeploymentTargets: [PackageModel.Platform:PlatformVersion]? = nil
     ) -> PackageGraph {
+        try! self.loadPackageGraph(rootInput: root,
+                                   explicitProduct: explicitProduct,
+                                   createMultipleTestProducts: createMultipleTestProducts,
+                                   createREPLProduct: createREPLProduct,
+                                   forceResolvedVersions: forceResolvedVersions,
+                                   diagnostics: diagnostics,
+                                   xcTestMinimumDeploymentTargets: xcTestMinimumDeploymentTargets)
+    }
+
+    @discardableResult
+    public func loadPackageGraph(
+        rootInput root: PackageGraphRootInput,
+        explicitProduct: String? = nil,
+        createMultipleTestProducts: Bool = false,
+        createREPLProduct: Bool = false,
+        forceResolvedVersions: Bool = false,
+        diagnostics: DiagnosticsEngine,
+        xcTestMinimumDeploymentTargets: [PackageModel.Platform:PlatformVersion]? = nil
+    ) throws -> PackageGraph {
 
         // Perform dependency resolution, if required.
         let manifests: DependencyManifests
         if forceResolvedVersions {
-            manifests = self._resolveToResolvedVersion(
+            manifests = try self._resolveToResolvedVersion(
                 root: root,
                 explicitProduct: explicitProduct,
                 diagnostics: diagnostics
             )
         } else {
-            manifests = self._resolve(
+            manifests = try self._resolve(
                 root: root,
                 explicitProduct: explicitProduct,
                 forceResolution: false,
@@ -676,16 +697,19 @@ extension Workspace {
             )
         }
 
-        let remoteArtifacts = state.artifacts.compactMap({ artifact -> RemoteArtifact? in
+        let remoteArtifacts = try state.artifacts.compactMap({ artifact -> RemoteArtifact? in
             if case .remote(let url, _, _) = artifact.source {
-                return RemoteArtifact(url: url, path: path(for: artifact)!)
+                guard let path = self.path(for: artifact) else {
+                    throw InternalError("failed computing path for \(artifact)")
+                }
+                return RemoteArtifact(url: url, path: path)
             } else {
                 return nil
             }
         })
 
         // Load the graph.
-        return PackageGraph.load(
+        return try PackageGraph.load(
             root: manifests.root,
             mirrors: config.mirrors,
             additionalFileRules: additionalFileRules,
@@ -701,14 +725,30 @@ extension Workspace {
         )
     }
 
+
+    // FIXME: deprecated 12/2020, remove once clients migrate
     @discardableResult
+    @available(*, deprecated, message: "use throwing variant instead (loadPackageGraph(rootPath:)")
     public func loadPackageGraph(
         root: AbsolutePath,
         explicitProduct: String? = nil,
         diagnostics: DiagnosticsEngine
     ) -> PackageGraph {
-        return self.loadPackageGraph(
-            root: PackageGraphRootInput(packages: [root], mirrors: config.mirrors),
+        try! self.loadPackageGraph(
+            rootInput: PackageGraphRootInput(packages: [root], mirrors: config.mirrors),
+            explicitProduct: explicitProduct,
+            diagnostics: diagnostics
+        )
+    }
+
+    @discardableResult
+    public func loadPackageGraph(
+        rootPath: AbsolutePath,
+        explicitProduct: String? = nil,
+        diagnostics: DiagnosticsEngine
+    ) throws -> PackageGraph {
+        try self.loadPackageGraph(
+            rootInput: PackageGraphRootInput(packages: [rootPath], mirrors: config.mirrors),
             explicitProduct: explicitProduct,
             diagnostics: diagnostics
         )
@@ -724,8 +764,8 @@ extension Workspace {
         root: PackageGraphRootInput,
         forceResolution: Bool = false,
         diagnostics: DiagnosticsEngine
-    ) {
-        _resolve(root: root, forceResolution: forceResolution, diagnostics: diagnostics)
+    ) throws {
+        try self._resolve(root: root, forceResolution: forceResolution, diagnostics: diagnostics)
     }
 
     /// Loads and returns manifests at the given paths.
@@ -959,7 +999,7 @@ extension Workspace {
         // Resolve the dependencies if workspace root is provided. We do this to
         // ensure the unedited version of this dependency is resolved properly.
         if let root = root {
-            resolve(root: root, diagnostics: diagnostics)
+            try self.resolve(root: root, diagnostics: diagnostics)
         }
     }
 
@@ -1253,7 +1293,7 @@ extension Workspace {
     public func loadDependencyManifests(
         root: PackageGraphRoot,
         diagnostics: DiagnosticsEngine
-    ) -> DependencyManifests {
+    ) throws -> DependencyManifests {
 
         // Make a copy of dependencies as we might mutate them in the for loop.
         let dependenciesToCheck = Array(state.dependencies)
@@ -1292,7 +1332,7 @@ extension Workspace {
             partial[manifest.url] = manifest
         }
 
-        let allManifestsWithPossibleDuplicates = try! topologicalSort(inputManifests.map({ KeyedPair(($0, ProductFilter.everything), key: NameAndFilter(name: $0.name, filter: .everything)) })) { node in
+        let allManifestsWithPossibleDuplicates = try topologicalSort(inputManifests.map({ KeyedPair(($0, ProductFilter.everything), key: NameAndFilter(name: $0.name, filter: .everything)) })) { node in
             return node.item.0.dependenciesRequired(for: node.item.1).compactMap({ dependency in
                 let url = config.mirrors.effectiveURL(forURL: dependency.url)
                 let manifest = loadedManifests[url] ?? loadManifest(forURL: url, diagnostics: diagnostics)
@@ -1312,8 +1352,13 @@ extension Workspace {
             }
         }
 
-        let allDependencyManifests = allManifests.map({ $0.item }).filter({ !root.manifests.contains($0.0) })
-        let deps = allDependencyManifests.map({ ($0, state.dependencies[forURL: $0.url]!, $1) })
+        let allDependencyManifests = allManifests.map{ $0.item }.filter{ !root.manifests.contains($0.0) }
+        let deps = try allDependencyManifests.map{ manifest, productFilter -> (Manifest, ManagedDependency, ProductFilter) in
+            guard let dependency = state.dependencies[forURL: manifest.url] else {
+                throw InternalError("dependency not found for \(manifest.url)")
+            }
+            return (manifest, dependency, productFilter)
+        }
 
         return DependencyManifests(root: root, dependencies: deps, workspace: self)
     }
@@ -1418,8 +1463,8 @@ extension Workspace {
         manifests: DependencyManifests,
         addedOrUpdatedPackages: [PackageReference],
         diagnostics: DiagnosticsEngine
-    ) {
-        let updatedArtifacts = artifacts(from: manifests)
+    ) throws {
+        let updatedArtifacts = try self.artifacts(from: manifests)
 
         var artifactsToRemove: [ManagedArtifact] = []
         var artifactsToAdd: [ManagedArtifact] = []
@@ -1492,7 +1537,7 @@ extension Workspace {
             return
         }
 
-        download(artifactsToDownload, diagnostics: diagnostics)
+        try self.download(artifactsToDownload, diagnostics: diagnostics)
 
         for artifact in artifactsToAdd {
             state.artifacts.add(artifact)
@@ -1503,7 +1548,7 @@ extension Workspace {
         }
     }
 
-    private func artifacts(from manifests: DependencyManifests) -> [ManagedArtifact] {
+    private func artifacts(from manifests: DependencyManifests) throws -> [ManagedArtifact] {
         let packageAndManifests: [(PackageReference, Manifest)] =
             zip(manifests.root.packageRefs, manifests.root.manifests) + // Root package and manifests.
             manifests.dependencies.map({ manifest, managed, _ in (managed.packageRef, manifest) }) // Dependency package and manifests.
@@ -1525,7 +1570,7 @@ extension Workspace {
                         subpath: subpath)
                     artifacts.append(artifact)
                 } else {
-                    fatalError("a binary target should have either a path or a URL and a checksum")
+                    throw InternalError("a binary target should have either a path or a URL and a checksum")
                 }
             }
         }
@@ -1537,7 +1582,7 @@ extension Workspace {
         RelativePath("\(packageRef.name)/\(targetName).xcframework")
     }
 
-    private func download(_ artifacts: [ManagedArtifact], diagnostics: DiagnosticsEngine) {
+    private func download(_ artifacts: [ManagedArtifact], diagnostics: DiagnosticsEngine) throws {
         let group = DispatchGroup()
         let tempDiagnostics = DiagnosticsEngine()
 
@@ -1553,7 +1598,7 @@ extension Workspace {
             group.enter()
 
             guard case .remote(let url, let checksum, _) = artifact.source, let destination = path(for: artifact) else {
-                fatalError("Can't download local artifact")
+                throw InternalError("Can't download local artifact")
             }
 
             let parentDirectory = destination.parentDirectory
@@ -1565,7 +1610,9 @@ extension Workspace {
                 continue
             }
 
-            let parsedURL = URL(string: url)!
+            guard let parsedURL = URL(string: url) else {
+                throw StringError("invalid url \(url)")
+            }
             let archivePath = parentDirectory.appending(component: parsedURL.lastPathComponent)
 
 
@@ -1635,8 +1682,8 @@ extension Workspace {
     public func resolveToResolvedVersion(
         root: PackageGraphRootInput,
         diagnostics: DiagnosticsEngine
-    ) {
-        _resolveToResolvedVersion(root: root, diagnostics: diagnostics)
+    ) throws {
+        try self._resolveToResolvedVersion(root: root, diagnostics: diagnostics)
     }
 
     /// Resolves the dependencies according to the entries present in the Package.resolved file.
@@ -1648,7 +1695,7 @@ extension Workspace {
         root: PackageGraphRootInput,
         explicitProduct: String? = nil,
         diagnostics: DiagnosticsEngine
-    ) -> DependencyManifests {
+    ) throws -> DependencyManifests {
         // Ensure the cache path exists.
         createCacheDirectories(with: diagnostics)
 
@@ -1657,7 +1704,7 @@ extension Workspace {
 
         // Load the pins store or abort now.
         guard let pinsStore = diagnostics.wrap({ try self.pinsStore.load() }), !diagnostics.hasErrors else {
-            return loadDependencyManifests(root: graphRoot, diagnostics: diagnostics)
+            return try self.loadDependencyManifests(root: graphRoot, diagnostics: diagnostics)
         }
 
         // Request all the containers to fetch them in parallel.
@@ -1707,7 +1754,7 @@ extension Workspace {
         }
         diagnostics.wrap { try state.saveState() }
 
-        let currentManifests = loadDependencyManifests(root: graphRoot, diagnostics: diagnostics)
+        let currentManifests = try self.loadDependencyManifests(root: graphRoot, diagnostics: diagnostics)
 
         let precomputationResult = precomputeResolution(
             root: graphRoot,
@@ -1719,7 +1766,7 @@ extension Workspace {
             diagnostics.emit(error: "cannot update Package.resolved file because automatic resolution is disabled")
         }
 
-        updateBinaryArtifacts(manifests: currentManifests, addedOrUpdatedPackages: [], diagnostics: diagnostics)
+        try self.updateBinaryArtifacts(manifests: currentManifests, addedOrUpdatedPackages: [], diagnostics: diagnostics)
 
         return currentManifests
     }
@@ -1738,7 +1785,7 @@ extension Workspace {
         extraConstraints: [PackageContainerConstraint] = [],
         diagnostics: DiagnosticsEngine,
         retryOnPackagePathMismatch: Bool = true
-    ) -> DependencyManifests {
+    ) throws -> DependencyManifests {
 
         // Ensure the cache path exists and validate that edited dependencies.
         createCacheDirectories(with: diagnostics)
@@ -1748,7 +1795,7 @@ extension Workspace {
 
         // Load the current manifests.
         let graphRoot = PackageGraphRoot(input: root, manifests: rootManifests, explicitProduct: explicitProduct)
-        let currentManifests = loadDependencyManifests(root: graphRoot, diagnostics: diagnostics)
+        let currentManifests = try self.loadDependencyManifests(root: graphRoot, diagnostics: diagnostics)
         guard !diagnostics.hasErrors else {
             return currentManifests
         }
@@ -1779,7 +1826,7 @@ extension Workspace {
 
             switch result {
             case .notRequired:
-                updateBinaryArtifacts(
+                try self.updateBinaryArtifacts(
                     manifests: currentManifests,
                     addedOrUpdatedPackages: [],
                     diagnostics: diagnostics)
@@ -1816,7 +1863,7 @@ extension Workspace {
         }
 
         // Update the pinsStore.
-        let updatedDependencyManifests = loadDependencyManifests(root: graphRoot, diagnostics: diagnostics)
+        let updatedDependencyManifests = try self.loadDependencyManifests(root: graphRoot, diagnostics: diagnostics)
 
         // If we still have required URLs, we probably cloned a wrong URL for
         // some package dependency.
@@ -1832,7 +1879,7 @@ extension Workspace {
             } else if retryOnPackagePathMismatch {
                 // Retry resolution which will most likely resolve correctly now since
                 // we have the manifest files of all the dependencies.
-                return self._resolve(
+                return try self._resolve(
                     root: root,
                     explicitProduct: explicitProduct,
                     forceResolution: forceResolution,
@@ -1855,7 +1902,7 @@ extension Workspace {
         self.pinAll(dependencyManifests: updatedDependencyManifests, pinsStore: pinsStore, diagnostics: diagnostics)
 
         let addedOrUpdatedPackages = packageStateChanges.compactMap({ $0.1.isAddedOrUpdated ? $0.0 : nil })
-        updateBinaryArtifacts(
+        try self.updateBinaryArtifacts(
             manifests: updatedDependencyManifests,
             addedOrUpdatedPackages: addedOrUpdatedPackages,
             diagnostics: diagnostics)
@@ -2077,7 +2124,7 @@ extension Workspace {
                     return path(for: $0).pathString == packageRef.path
                 }) {
                     currentDependency = editedDependency
-                    let originalReference = editedDependency.basedOn!.packageRef
+                    let originalReference = editedDependency.basedOn!.packageRef // forced unwrap safe
                     packageStateChanges[originalReference.path] = (originalReference, .unchanged)
                 } else {
                     currentDependency = nil
@@ -2086,7 +2133,7 @@ extension Workspace {
 
             switch binding {
             case .excluded:
-                fatalError("Unexpected excluded binding")
+                throw InternalError("Unexpected excluded binding")
 
             case .unversioned:
                 // Ignore the root packages.
@@ -2110,9 +2157,11 @@ extension Workspace {
             case .revision(let identifier, let branch):
                 // Get the latest revision from the container.
                 // TODO: replace with async/await when available
-                let container = try temp_await {
+                guard let container = (try temp_await {
                     containerProvider.getContainer(for: packageRef, skipUpdate: true, on: self.queue, completion: $0)
-                } as! RepositoryPackageContainer
+                }) as? RepositoryPackageContainer else {
+                    throw InternalError("invalid container for \(packageRef) expected a RepositoryPackageContainer")
+                }
                 var revision = try container.getRevision(forIdentifier: identifier)
                 let branch = branch ?? (identifier == revision.identifier ? nil : identifier)
 
@@ -2410,9 +2459,13 @@ extension Workspace {
             // annoying. Maybe we should make an SPI on the provider for
             // this?
             // FIXME: this should not block
-            let container = try temp_await { containerProvider.getContainer(for: package, skipUpdate: true, on: self.queue, completion: $0) } as! RepositoryPackageContainer
+            guard let container = (try temp_await {
+                containerProvider.getContainer(for: package, skipUpdate: true, on: self.queue, completion: $0)
+            }) as? RepositoryPackageContainer else {
+                throw InternalError("invalid container for \(package) expected a RepositoryPackageContainer")
+            }
             guard let tag = container.getTag(for: version) else {
-                throw StringError("Internal error: please file a bug at https://bugs.swift.org with this info -- unable to get tag for \(package) \(version); available versions \(try container.versionsDescending())")
+                throw InternalError("unable to get tag for \(package) \(version); available versions \(try container.versionsDescending())")
             }
             let revision = try container.getRevision(forTag: tag)
             checkoutState = CheckoutState(revision: revision, version: version)
@@ -2433,7 +2486,7 @@ extension Workspace {
     fileprivate func remove(package: PackageReference) throws {
 
         guard let dependency = state.dependencies[forURL: package.path] else {
-            fatalError("This should never happen, trying to remove \(package.name) which isn't in workspace")
+            throw InternalError("trying to remove \(package.name) which isn't in workspace")
         }
 
         // We only need to update the managed dependency structure to "remove"
