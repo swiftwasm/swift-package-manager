@@ -8,6 +8,7 @@
  See http://swift.org/CONTRIBUTORS.txt for Swift project authors
 */
 
+import Basics
 import TSCBasic
 import TSCUtility
 import PackageModel
@@ -694,7 +695,7 @@ public final class SwiftTargetBuildDescription {
         return args
     }
 
-    public func emitCommandLine() -> [String] {
+    public func emitCommandLine() throws -> [String] {
         var result: [String] = []
         result.append(buildParameters.toolchain.swiftCompiler.pathString)
 
@@ -710,7 +711,7 @@ public final class SwiftTargetBuildDescription {
 
         result.append("-output-file-map")
         // FIXME: Eliminate side effect.
-        result.append(try! writeOutputFileMap().pathString)
+        result.append(try writeOutputFileMap().pathString)
 
         switch target.type {
         case .library, .test:
@@ -734,7 +735,7 @@ public final class SwiftTargetBuildDescription {
         result.append("-I")
         result.append(buildParameters.buildPath.pathString)
 
-        result += compileArguments()
+        result += self.compileArguments()
         return result
      }
 
@@ -788,7 +789,7 @@ public final class SwiftTargetBuildDescription {
     /// Command-line for emitting the object files.
     ///
     /// Note: This doesn't emit the module.
-    public func emitObjectsCommandLine() -> [String] {
+    public func emitObjectsCommandLine() throws -> [String] {
         assert(buildParameters.emitSwiftModuleSeparately)
 
         var result: [String] = []
@@ -801,7 +802,7 @@ public final class SwiftTargetBuildDescription {
 
         result.append("-output-file-map")
         // FIXME: Eliminate side effect.
-        result.append(try! writeOutputFileMap().pathString)
+        result.append(try writeOutputFileMap().pathString)
 
         if target.type == .library || target.type == .test {
             result.append("-parse-as-library")
@@ -1219,7 +1220,7 @@ public final class ProductBuildDescription {
     }
 
     /// The arguments to link and create this product.
-    public func linkArguments() -> [String] {
+    public func linkArguments() throws -> [String] {
         var args = [buildParameters.toolchain.swiftCompiler.pathString]
         args += buildParameters.toolchain.extraSwiftCFlags
         args += buildParameters.sanitizers.linkSwiftFlags()
@@ -1602,9 +1603,9 @@ public class BuildPlan {
         for buildTarget in targets {
             switch buildTarget {
             case .swift(let target):
-                try plan(swiftTarget: target)
+                try self.plan(swiftTarget: target)
             case .clang(let target):
-                plan(clangTarget: target)
+                try self.plan(clangTarget: target)
             }
         }
 
@@ -1620,7 +1621,7 @@ public class BuildPlan {
     /// Plan a product.
     private func plan(_ buildProduct: ProductBuildDescription) throws {
         // Compute the product's dependency.
-        let dependencies = computeDependencies(of: buildProduct.product)
+        let dependencies = try computeDependencies(of: buildProduct.product)
 
         // Add flags for system targets.
         for systemModule in dependencies.systemModules {
@@ -1655,7 +1656,9 @@ public class BuildPlan {
             switch target.underlyingTarget {
             case is SwiftTarget:
                 // Swift targets are guaranteed to have a corresponding Swift description.
-                guard case .swift(let description) = targetMap[target]! else { fatalError() }
+                guard case .swift(let description) = targetMap[target] else {
+                    throw InternalError("unknown target \(target)")
+                }
 
                 // Based on the debugging strategy, we either need to pass swiftmodule paths to the
                 // product or link in the wrapped module object. This is required for properly debugging
@@ -1688,7 +1691,12 @@ public class BuildPlan {
         }
 
         buildProduct.staticTargets = dependencies.staticTargets
-        buildProduct.dylibs = dependencies.dylibs.map({ productMap[$0]! })
+        buildProduct.dylibs = try dependencies.dylibs.map{
+            guard let product = productMap[$0] else {
+                throw InternalError("unknown product \($0)")
+            }
+            return product
+        }
         buildProduct.libraryBinaryPaths = dependencies.libraryBinaryPaths
 
         // Write the link filelist file.
@@ -1701,7 +1709,7 @@ public class BuildPlan {
     /// Computes the dependencies of a product.
     private func computeDependencies(
         of product: ResolvedProduct
-    ) -> (
+    ) throws -> (
         dylibs: [ResolvedProduct],
         staticTargets: [ResolvedTarget],
         systemModules: [ResolvedTarget],
@@ -1710,7 +1718,7 @@ public class BuildPlan {
 
         // Sort the product targets in topological order.
         let nodes: [ResolvedTarget.Dependency] = product.targets.map { .target($0, conditions: []) }
-        let allTargets = try! topologicalSort(nodes, successors: { dependency in
+        let allTargets = try topologicalSort(nodes, successors: { dependency in
             switch dependency {
             // Include all the depenencies of a target.
             case .target(let target, _):
@@ -1779,8 +1787,8 @@ public class BuildPlan {
     }
 
     /// Plan a Clang target.
-    private func plan(clangTarget: ClangTargetBuildDescription) {
-        for case .target(let dependency, _) in clangTarget.target.recursiveDependencies(satisfying: buildEnvironment) {
+    private func plan(clangTarget: ClangTargetBuildDescription) throws {
+        for case .target(let dependency, _) in try clangTarget.target.recursiveDependencies(satisfying: buildEnvironment) {
             switch dependency.underlyingTarget {
             case is SwiftTarget:
                 if case let .swift(dependencyTargetDescription)? = targetMap[dependency] {
@@ -1818,7 +1826,7 @@ public class BuildPlan {
     private func plan(swiftTarget: SwiftTargetBuildDescription) throws {
         // We need to iterate recursive dependencies because Swift compiler needs to see all the targets a target
         // depends on.
-        for case .target(let dependency, _) in swiftTarget.target.recursiveDependencies(satisfying: buildEnvironment) {
+        for case .target(let dependency, _) in try swiftTarget.target.recursiveDependencies(satisfying: buildEnvironment) {
             switch dependency.underlyingTarget {
             case let underlyingTarget as ClangTarget where underlyingTarget.type == .library:
                 guard case let .clang(target)? = targetMap[dependency] else {
@@ -1955,9 +1963,9 @@ public class BuildPlan {
             libsCache.append(contentsOf: tuple.libs)
         }
 
-        pkgConfigCache[target] = ([String](cflagsCache), libsCache)
-
-        return pkgConfigCache[target]!
+        let result = ([String](cflagsCache), libsCache)
+        pkgConfigCache[target] = result
+        return result
     }
 
     /// Extracts the library to building against from a XCFramework.
@@ -1987,11 +1995,13 @@ public class BuildPlan {
         }
 
         // If we don't have the library information yet, calculate it.
-        if !xcFrameworkCache.keys.contains(target) {
-            xcFrameworkCache[target] = calculateLibraryInfo()
+        if let xcFramework = xcFrameworkCache[target] {
+            return xcFramework
         }
 
-        return xcFrameworkCache[target]!
+        let xcFramework = calculateLibraryInfo()
+        xcFrameworkCache[target] = xcFramework
+        return xcFramework
     }
 
     /// Cache for pkgConfig flags.
