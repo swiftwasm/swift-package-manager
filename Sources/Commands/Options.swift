@@ -203,6 +203,9 @@ public struct SwiftToolOptions: ParsableArguments {
     @Flag(name: .customLong("static-swift-stdlib"), inversion: .prefixedNo, help: "Link Swift stdlib statically")
     var shouldLinkStaticSwiftStdlib: Bool = false
 
+    @Flag(name: .customLong("stdlib-module-summary-merge"), inversion: .prefixedEnableDisable)
+    var shouldMergeStdlibModuleSummary: Bool = true
+
     /// Skip updating dependencies from their remote during a resolution.
     @Flag(name: .customLong("skip-update"), help: "Skip updating dependencies from their remote during a resolution")
     var skipDependencyUpdate: Bool = false
