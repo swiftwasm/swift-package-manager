@@ -200,7 +200,7 @@ extension LLBuildManifestBuilder {
             cmdOutputs += objectNodes + [moduleNode]
             try addSwiftCmdsViaIntegratedDriver(target, inputs: inputs, objectNodes: objectNodes, moduleNode: moduleNode)
         } else if buildParameters.emitSwiftModuleSeparately || buildParameters.ltoMode != nil {
-            cmdOutputs += addSwiftCmdsEmitSwiftModuleSeparately(target, inputs: inputs, moduleNode: moduleNode)
+            cmdOutputs += try addSwiftCmdsEmitSwiftModuleSeparately(target, inputs: inputs, moduleNode: moduleNode)
             cmdOutputs += [moduleNode]
         } else {
             cmdOutputs += objectNodes + [moduleNode]
@@ -841,7 +841,7 @@ extension LLBuildManifestBuilder {
                     description: "Linking \(buildProduct.binary.prettyPath())",
                     inputs: inputs.map(Node.file),
                     outputs: [.file(buildProduct.binary)],
-                    args: buildProduct.linkArguments()
+                    args: try buildProduct.linkArguments()
                 )
             case .none, .LLVM:
                 let inputs = buildProduct.objects + buildProduct.dylibs.map({ $0.binary })
