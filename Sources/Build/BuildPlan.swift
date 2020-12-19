@@ -1361,7 +1361,8 @@ public final class ProductBuildDescription {
                     args += ["-static-stdlib"]
                 }
             }
-            if buildParameters.shouldMergeStdlibModuleSummary {
+            if buildParameters.shouldMergeStdlibModuleSummary
+                && buildParameters.ltoMode != nil {
                 args += ["-no-stdlib-link"]
             }
             args += ["-emit-executable"]
