@@ -1,0 +1,13 @@
+name: Build
+on:
+  push: {}
+jobs:
+  run:
+    runs-on: macOS-latest
+    name: Build
+    steps:
+    - uses: actions/checkout@v2
+    - name: Select latest Xcode
+      run: sudo xcode-select --switch /Applications/Xcode_12.3.app/Contents/Developer/
+    - name: Build
+      run: swift build
