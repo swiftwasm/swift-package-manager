@@ -1334,7 +1334,7 @@ public final class ProductBuildDescription {
 
         switch product.type {
         case .library(.automatic):
-            fatalError()
+            throw InternalError("automatic library not supported")
         case .library(.static):
             // No arguments for static libraries.
             return []
