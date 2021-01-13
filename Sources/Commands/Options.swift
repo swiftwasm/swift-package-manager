@@ -138,11 +138,12 @@ public struct SwiftToolOptions: ParsableArguments {
     @Option(help: "Specify build/cache directory")
     var buildPath: AbsolutePath?
 
-    @Option(help: "Specify the global repository cache directory")
+    @Option(help: "Specify the shared cache directory")
     var cachePath: AbsolutePath?
 
-    @Flag(help: "Skip the cache when fetching")
-    var skipCache: Bool = false
+    /// Disables repository caching.
+    @Flag(name: .customLong("repository-cache"), inversion: .prefixedEnableDisable, help: "Use a shared cache when fetching repositories")
+    var useRepositoriesCache: Bool = true
 
     /// The custom working directory that the tool should operate in (deprecated).
     @Option(name: [.long, .customShort("C")])
@@ -172,8 +173,22 @@ public struct SwiftToolOptions: ParsableArguments {
     var shouldDisableSandbox: Bool = false
 
     /// Disables manifest caching.
-    @Flag(name: .customLong("disable-package-manifest-caching"), help: "Disable caching Package.swift manifests")
+    @Flag(name: .customLong("disable-package-manifest-caching"), help: .hidden)
     var shouldDisableManifestCaching: Bool = false
+
+    /// Disables manifest caching.
+    @Option(name: .customLong("manifest-cache"), help: "Caching mode of Package.swift manifests (shared: shared cache, local: package's build directory, none: disabled")
+    var manifestCachingMode: ManifestCachingMode = .shared
+
+    enum ManifestCachingMode: String, ExpressibleByArgument {
+        case none
+        case local
+        case shared
+
+        init?(argument: String) {
+            self.init(rawValue: argument)
+        }
+    }
 
     /// Path to the compilation destination describing JSON file.
     @Option(name: .customLong("destination"), completion: .file())
@@ -261,8 +276,8 @@ public struct SwiftToolOptions: ParsableArguments {
     var enableTestDiscovery: Bool = false
 
     /// Whether to enable llbuild manifest caching.
-    @Flag()
-    var enableBuildManifestCaching: Bool = false
+    @Flag(name: .customLong("build-manifest-caching"), inversion: .prefixedEnableDisable)
+    var cacheBuildManifest: Bool = true
 
     /// Emit the Swift module separately from the object files.
     @Flag()

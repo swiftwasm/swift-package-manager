@@ -37,7 +37,7 @@ public enum WorkspaceResolveReason: Equatable {
 }
 
 /// The delegate interface used by the workspace to report status information.
-public protocol WorkspaceDelegate: class {
+public protocol WorkspaceDelegate: AnyObject {
 
     /// The workspace is about to load a package manifest (which might be in the cache, or might need to be parsed). Note that this does not include speculative loading of manifests that may occr during dependency resolution; rather, it includes only the final manifest loading that happens after a particular package version has been checked out into a working directory.
     func willLoadManifest(packagePath: AbsolutePath, url: String, version: Version?, packageKind: PackageReference.Kind)
@@ -183,7 +183,7 @@ private class WorkspaceRepositoryManagerDelegate: RepositoryManagerDelegate {
 /// This class does *not* support concurrent operations.
 public class Workspace {
     /// The delegate interface.
-    public let delegate: WorkspaceDelegate?
+    public weak var delegate: WorkspaceDelegate?
 
     /// The path of the workspace data.
     public let dataPath: AbsolutePath
@@ -303,6 +303,13 @@ public class Workspace {
         self.downloader = downloader
         self.netrcFilePath = netrcFilePath
         self.archiver = archiver
+
+        var checksumAlgorithm = checksumAlgorithm
+        #if canImport(CryptoKit)
+        if checksumAlgorithm is SHA256, #available(macOS 10.15, *) {
+            checksumAlgorithm = CryptoKitSHA256()
+        }
+        #endif
         self.checksumAlgorithm = checksumAlgorithm
         self.isResolverPrefetchingEnabled = isResolverPrefetchingEnabled
         self.skipUpdate = skipUpdate
@@ -346,14 +353,16 @@ public class Workspace {
     public static func create(
         forRootPackage packagePath: AbsolutePath,
         manifestLoader: ManifestLoaderProtocol,
-        repositoryManager: RepositoryManager? = nil
+        repositoryManager: RepositoryManager? = nil,
+        delegate: WorkspaceDelegate? = nil
     ) -> Workspace {
         return Workspace(
             dataPath: packagePath.appending(component: ".build"),
             editablesPath: packagePath.appending(component: "Packages"),
             pinsFile: packagePath.appending(component: "Package.resolved"),
             manifestLoader: manifestLoader,
-            repositoryManager: repositoryManager
+            repositoryManager: repositoryManager,
+            delegate: delegate
         )
     }
 }
@@ -509,7 +518,10 @@ extension Workspace {
     ///     - diagnostics: The diagnostics engine that reports errors, warnings
     ///       and notes.
     public func purgeCache(with diagnostics: DiagnosticsEngine) {
-        diagnostics.wrap { try repositoryManager.purgeCache() }
+        diagnostics.wrap {
+            try repositoryManager.purgeCache()
+            try manifestLoader.purgeCache()
+        }
     }
 
     /// Resets the entire workspace by removing the data directory.
@@ -518,14 +530,13 @@ extension Workspace {
     ///     - diagnostics: The diagnostics engine that reports errors, warnings
     ///       and notes.
     public func reset(with diagnostics: DiagnosticsEngine) {
-        let removed = diagnostics.wrap({
+        let removed = diagnostics.wrap {
             try fileSystem.chmod(.userWritable, path: checkoutsPath, options: [.recursive, .onlyFiles])
             // Reset state.
             try state.reset()
-        })
+        }
 
         guard removed else { return }
-
         repositoryManager.reset()
         try? manifestLoader.resetCache()
         try? fileSystem.removeFileTree(dataPath)
@@ -551,8 +562,9 @@ extension Workspace {
         // Create cache directories.
         createCacheDirectories(with: diagnostics)
 
+        // FIXME: this should not block
         // Load the root manifests and currently checked out manifests.
-        let rootManifests = loadRootManifests(packages: root.packages, diagnostics: diagnostics)
+        let rootManifests = try temp_await { self.loadRootManifests(packages: root.packages, diagnostics: diagnostics, completion: $0) }
 
         // Load the current manifests.
         let graphRoot = PackageGraphRoot(input: root, manifests: rootManifests)
@@ -582,7 +594,7 @@ extension Workspace {
         
         // Resolve the dependencies.
         let resolver = self.createResolver(pinsMap: pinsMap)
-        activeResolver = resolver
+        self.activeResolver = resolver
 
         let updateResults = resolveDependencies(
             resolver: resolver,
@@ -591,7 +603,7 @@ extension Workspace {
         )
 
         // Reset the active resolver.
-        activeResolver = nil
+        self.activeResolver = nil
 
         guard !diagnostics.hasErrors else { return nil }
 
@@ -768,22 +780,35 @@ extension Workspace {
     /// Loads and returns manifests at the given paths.
     public func loadRootManifests(
         packages: [AbsolutePath],
-        diagnostics: DiagnosticsEngine
-    ) -> [Manifest] {
-
-        let rootManifests = packages.compactMap({ package -> Manifest? in
-             loadManifest(packagePath: package, url: package.pathString, packageKind: .root, diagnostics: diagnostics)
-         })
-
-        // Check for duplicate root packages.
-        let duplicateRoots = rootManifests.spm_findDuplicateElements(by: \.name)
-        if !duplicateRoots.isEmpty {
-            let name = duplicateRoots[0][0].name
-            diagnostics.emit(error: "found multiple top-level packages named '\(name)'")
-            return []
+        diagnostics: DiagnosticsEngine,
+        completion: @escaping(Result<[Manifest], Error>) -> Void
+    ) {
+        let lock = Lock()
+        let sync = DispatchGroup()
+        var rootManifests = [Manifest]()
+        Set(packages).forEach { package in
+            sync.enter()
+            self.loadManifest(packagePath: package, url: package.pathString, packageKind: .root, diagnostics: diagnostics) { result in
+                defer { sync.leave() }
+                if case .success(let manifest) = result {
+                    lock.withLock {
+                        rootManifests.append(manifest)
+                    }
+                }
+            }
         }
 
-        return rootManifests
+        sync.notify(queue: self.queue) {
+            // Check for duplicate root packages.
+            let duplicateRoots = rootManifests.spm_findDuplicateElements(by: \.name)
+            if !duplicateRoots.isEmpty {
+                let name = duplicateRoots[0][0].name
+                diagnostics.emit(error: "found multiple top-level packages named '\(name)'")
+                return completion(.success([]))
+            }
+
+            completion(.success(rootManifests))
+        }
     }
 
     /// Generates the checksum
@@ -855,15 +880,17 @@ extension Workspace {
         // If there is something present at the destination, we confirm it has
         // a valid manifest with name same as the package we are trying to edit.
         if fileSystem.exists(destination) {
-            let manifest = loadManifest(
-                packagePath: destination,
-                url: dependency.packageRef.repository.url,
-                packageKind: .local,
-                diagnostics: diagnostics
-            )
+            // FIXME: this should not block
+            let manifest = try temp_await {
+                self.loadManifest(packagePath: destination,
+                                  url: dependency.packageRef.repository.url,
+                                  packageKind: .local,
+                                  diagnostics: diagnostics,
+                                  completion: $0)
+            }
 
-            guard manifest?.name == packageName else {
-                return diagnostics.emit(error: "package at '\(destination)' is \(manifest?.name ?? "<unknown>") but was expecting \(packageName)")
+            guard manifest.name == packageName else {
+                return diagnostics.emit(error: "package at '\(destination)' is \(manifest.name) but was expecting \(packageName)")
             }
 
             // Emit warnings for branch and revision, if they're present.
@@ -1013,7 +1040,7 @@ extension Workspace {
         diagnostics: DiagnosticsEngine
     ) {
         // Reset the pinsStore and start pinning the required dependencies.
-		pinsStore.unpinAll()
+        pinsStore.unpinAll()
 
         let requiredURLs = dependencyManifests.computePackageURLs().required
 
@@ -1074,26 +1101,21 @@ extension Workspace {
             self.workspace = workspace
         }
 
-        /// Find a manifest given its name.
-        func lookup(manifest name: String) -> Manifest? {
-            return dependencies.first(where: { $0.manifest.name == name })?.manifest
-        }
-
         /// Returns all manifests contained in DependencyManifests.
         public func allDependencyManifests() -> [Manifest] {
-            return dependencies.map({ $0.manifest })
+            return self.dependencies.map{ $0.manifest }
         }
 
         /// Computes the identities which are declared in the manifests but aren't present in dependencies.
         public func missingPackageURLs() -> Set<PackageReference> {
-            return computePackageURLs().missing
+            return self.computePackageURLs().missing
         }
 
         /// Returns the list of packages which are allowed to vend products with unsafe flags.
         func unsafeAllowedPackages() -> Set<PackageReference> {
             var result = Set<PackageReference>()
 
-            for dependency in dependencies {
+            for dependency in self.dependencies {
                 let dependency = dependency.dependency
                 switch dependency.state {
                 case .checkout(let checkout):
@@ -1115,44 +1137,46 @@ extension Workspace {
 
         func computePackageURLs() -> (required: Set<PackageReference>, missing: Set<PackageReference>) {
             let manifestsMap: [PackageIdentity: Manifest] = Dictionary(uniqueKeysWithValues:
-                root.manifests.map({ (PackageIdentity(url: $0.url), $0) }) +
-                dependencies.map({ (PackageIdentity(url: $0.manifest.url), $0.manifest) }))
+                self.root.manifests.map { (PackageIdentity(url: $0.url), $0) } +
+                self.dependencies.map { (PackageIdentity(url: $0.manifest.url), $0.manifest) })
 
             var inputIdentities: Set<PackageReference> = []
-            let inputNodes: [GraphLoadingNode] = root.manifests.map({ manifest in
+            let inputNodes: [GraphLoadingNode] = self.root.manifests.map{ manifest in
                 let identity = PackageIdentity(url: manifest.url)
                 let package = PackageReference(identity: identity, path: manifest.url, kind: manifest.packageKind)
                 inputIdentities.insert(package)
                 let node = GraphLoadingNode(manifest: manifest, productFilter: .everything)
                 return node
-            }) + root.dependencies.compactMap({ dependency in
+            } + self.root.dependencies.compactMap{ dependency in
                 let url = workspace.config.mirrors.effectiveURL(forURL: dependency.url)
                 let identity = PackageIdentity(url: url)
                 let package = PackageReference(identity: identity, path: url)
                 inputIdentities.insert(package)
-                guard let manifest = manifestsMap[identity] else { return nil }
-                let node = GraphLoadingNode(manifest: manifest, productFilter: dependency.productFilter)
-                return node
-            })
+                return manifestsMap[identity].map { manifest in
+                    GraphLoadingNode(manifest: manifest, productFilter: dependency.productFilter)
+                }
+            }
 
+            // FIXME: this is dropping legitimate packages with equal identities and should be revised as part of the identity work
             var requiredIdentities: Set<PackageReference> = []
             _ = transitiveClosure(inputNodes) { node in
-                return node.manifest.dependenciesRequired(for: node.productFilter).compactMap({ dependency in
+                return node.manifest.dependenciesRequired(for: node.productFilter).compactMap{ dependency in
                     let url = workspace.config.mirrors.effectiveURL(forURL: dependency.url)
                     let identity = PackageIdentity(url: url)
                     let package = PackageReference(identity: identity, path: url)
                     requiredIdentities.insert(package)
-                    guard let manifest = manifestsMap[identity] else { return nil }
-                    return GraphLoadingNode(manifest: manifest, productFilter: dependency.productFilter)
-                })
+                    return manifestsMap[identity].map { manifest in
+                        GraphLoadingNode(manifest: manifest, productFilter: dependency.productFilter)
+                    }
+                }
             }
             // FIXME: This should be an ordered set.
             requiredIdentities = inputIdentities.union(requiredIdentities)
 
-            let availableIdentities: Set<PackageReference> = Set(manifestsMap.map({
+            let availableIdentities: Set<PackageReference> = Set(manifestsMap.map {
                 let url = workspace.config.mirrors.effectiveURL(forURL: $0.1.url)
                 return PackageReference(identity: $0.key, path: url, kind: $0.1.packageKind)
-            }))
+            })
             // We should never have loaded a manifest we don't need.
             assert(availableIdentities.isSubset(of: requiredIdentities), "\(availableIdentities) | \(requiredIdentities)")
             // These are the missing package identities.
@@ -1255,7 +1279,7 @@ extension Workspace {
             return checkoutsPath.appending(dependency.subpath)
         case .edited(let path):
             return path ?? editablesPath.appending(dependency.subpath)
-		case .local:
+        case .local:
             return AbsolutePath(dependency.packageRef.path)
         }
     }
@@ -1304,68 +1328,81 @@ extension Workspace {
         }
 
         // Try to load current managed dependencies, or emit and return.
-        fixManagedDependencies(with: diagnostics)
+        self.fixManagedDependencies(with: diagnostics)
         guard !diagnostics.hasErrors else {
             return DependencyManifests(root: root, dependencies: [], workspace: self)
         }
 
         // optimization: preload in parallel
         let rootDependencyManifestsURLs = root.dependencies.map{ config.mirrors.effectiveURL(forURL: $0.url) }
-        let rootDependencyManifests = self.loadManifests(forURLs: rootDependencyManifestsURLs, diagnostics: diagnostics)
+        let rootDependencyManifests = try temp_await { self.loadManifests(forURLs: rootDependencyManifestsURLs, diagnostics: diagnostics, completion: $0) }
 
         let inputManifests = root.manifests + rootDependencyManifests
 
         // Map of loaded manifests. We do this to avoid reloading the shared nodes.
 
         // Compute the transitive closure of available dependencies.
-        struct NameAndFilter: Hashable { // Just because a raw tuple cannot be hashable.
-            let name: String
-            let filter: ProductFilter
+        struct URLAndFilter: Hashable { // Just because a raw tuple cannot be hashable.
+            let url: String
+            let productFilter: ProductFilter
         }
 
-        // optimization: preload in parallel
-        let inputDependenciesURLs = inputManifests.compactMap { $0.dependencies.compactMap{ config.mirrors.effectiveURL(forURL: $0.url) } }.flatMap { $0 }
-        var loadedManifests = self.loadManifests(forURLs: inputDependenciesURLs, diagnostics: diagnostics).reduce(into: [String: Manifest]()) { (partial, manifest) in
-            partial[manifest.url] = manifest
-        }
+        // optimization: preload manifest we know about in parallel
+        let inputDependenciesURLs = inputManifests.map { $0.dependencies.map{ config.mirrors.effectiveURL(forURL: $0.url) } }.flatMap { $0 }
+        // FIXME: this should not block
+        var loadedManifests = try temp_await { self.loadManifests(forURLs: inputDependenciesURLs, diagnostics: diagnostics, completion: $0) }.spm_createDictionary{ ($0.url, $0) }
 
-        let allManifestsWithPossibleDuplicates = try topologicalSort(inputManifests.map({ KeyedPair(($0, ProductFilter.everything), key: NameAndFilter(name: $0.name, filter: .everything)) })) { node in
-            return node.item.0.dependenciesRequired(for: node.item.1).compactMap({ dependency in
+        // continue to load the rest of the manifest for this graph
+        let allManifestsWithPossibleDuplicates = try topologicalSort(inputManifests.map{ KeyedPair($0, key: URLAndFilter(url: $0.url, productFilter: .everything)) }) { node in
+            return node.item.dependenciesRequired(for: node.key.productFilter).compactMap{ dependency in
                 let url = config.mirrors.effectiveURL(forURL: dependency.url)
-                let manifest = loadedManifests[url] ?? loadManifest(forURL: url, diagnostics: diagnostics)
+                // FIXME: this should not block
+                // note: loadManifest emits diagnostics in case it fails
+                let manifest = loadedManifests[url] ?? temp_await { self.loadManifest(forURL: url, diagnostics: diagnostics, completion: $0) }
                 loadedManifests[url] = manifest
-                return manifest.flatMap({ KeyedPair(($0, dependency.productFilter), key: NameAndFilter(name: $0.name, filter: dependency.productFilter)) })
-            })
-        }
-
-        var deduplication: Set<String> = []
-        var allManifests: [KeyedPair<(Manifest, ProductFilter), NameAndFilter>] = []
-        for node in allManifestsWithPossibleDuplicates {
-            if deduplication.contains(node.item.0.name) {
-                continue // A duplicate.
-            } else {
-                allManifests.append(node)
-                deduplication.insert(node.item.0.name)
+                return manifest.flatMap { KeyedPair($0, key: URLAndFilter(url: $0.url, productFilter: dependency.productFilter)) }
             }
         }
 
-        let allDependencyManifests = allManifests.map{ $0.item }.filter{ !root.manifests.contains($0.0) }
-        let deps = try allDependencyManifests.map{ manifest, productFilter -> (Manifest, ManagedDependency, ProductFilter) in
-            guard let dependency = state.dependencies[forURL: manifest.url] else {
+        // remove duplicates of the same manifest (by identity)
+        var deduplication = [PackageIdentity: Int]()
+        var allManifests = [(manifest: Manifest, productFilter: ProductFilter)]()
+        for node in allManifestsWithPossibleDuplicates {
+            let identity = PackageIdentity(url: node.item.url)
+            if let index = deduplication[identity]  {
+                let productFilter = allManifests[index].productFilter.merge(node.key.productFilter)
+                allManifests[index] = (node.item, productFilter)
+            } else {
+                deduplication[identity] = allManifests.count
+                allManifests.append((node.item, node.key.productFilter))
+            }
+        }
+
+        let dependencyManifests = allManifests.filter{ !root.manifests.contains($0.manifest) }
+
+        // check for overrides attempts with same name but different path
+        let rootManifestsByName = root.manifests.spm_createDictionary{ ($0.name, $0) }
+        dependencyManifests.forEach { manifest, _ in
+            if let override = rootManifestsByName[manifest.name], override.url != manifest.url  {
+                diagnostics.emit(error: "unable to override package '\(manifest.name)' because its identity '\(PackageIdentity(url: manifest.url))' doesn't match override's identity (directory name) '\(PackageIdentity(url: override.url))'")
+            }
+        }
+
+        let dependencies = try dependencyManifests.map{ manifest, productFilter -> (Manifest, ManagedDependency, ProductFilter) in
+            guard let dependency = self.state.dependencies[forURL: manifest.url] else {
                 throw InternalError("dependency not found for \(manifest.url)")
             }
             return (manifest, dependency, productFilter)
         }
-
-        return DependencyManifests(root: root, dependencies: deps, workspace: self)
+        return DependencyManifests(root: root, dependencies: dependencies, workspace: self)
     }
 
 
     /// Loads the given manifest, if it is present in the managed dependencies.
-    fileprivate func loadManifest(forURL packageURL: String, diagnostics: DiagnosticsEngine) -> Manifest? {
+    fileprivate func loadManifest(forURL packageURL: String, diagnostics: DiagnosticsEngine, completion: @escaping (Manifest?) -> Void) {
         // Check if this dependency is available.
-        guard let managedDependency = state.dependencies[forURL: packageURL] else {
-            return nil
+        guard let managedDependency = self.state.dependencies[forURL: packageURL] else {
+            return completion(nil)
         }
 
         // The kind and version, if known.
@@ -1384,38 +1421,36 @@ extension Workspace {
         let packagePath = path(for: managedDependency)
 
         // Load and return the manifest.
-        return loadManifest(
-            packagePath: packagePath,
-            url: managedDependency.packageRef.path,
-            version: version,
-            packageKind: packageKind,
-            diagnostics: diagnostics
-        )
+        self.loadManifest(packagePath: packagePath,
+                          url: managedDependency.packageRef.path,
+                          version: version,
+                          packageKind: packageKind,
+                          diagnostics: diagnostics) { result in
+            // error is added to diagnostics in the function above
+            completion(try? result.get())
+        }
     }
 
-    private func loadManifests(forURLs urls: [String], diagnostics: DiagnosticsEngine) -> [Manifest] {
+    private func loadManifests(forURLs urls: [String], diagnostics: DiagnosticsEngine, completion: @escaping (Result<[Manifest], Error>) -> Void) {
         // this is allot of boilerplate code but its is important for performance
-        let operationQueue = OperationQueue()
-        operationQueue.name = self.queue.label + "-root-manifest-loading"
-        operationQueue.maxConcurrentOperationCount = Concurrency.maxOperations
-
         let lock = Lock()
         let sync = DispatchGroup()
         var manifests = [Manifest]()
-        urls.forEach { url in
+        Set(urls).forEach { url in
             sync.enter()
-            operationQueue.addOperation {
+            self.loadManifest(forURL: url, diagnostics: diagnostics) { manifest in
                 defer { sync.leave() }
-                if let manifest = self.loadManifest(forURL: url, diagnostics: diagnostics) {
+                if let manifest = manifest {
                     lock.withLock {
                         manifests.append(manifest)
                     }
                 }
             }
         }
-        sync.wait()
 
-        return manifests
+        sync.notify(queue: self.queue) {
+            completion(.success(manifests))
+        }
     }
 
     /// Load the manifest at a given path.
@@ -1426,34 +1461,42 @@ extension Workspace {
         url: String,
         version: Version? = nil,
         packageKind: PackageReference.Kind,
-        diagnostics: DiagnosticsEngine
-    ) -> Manifest? {
+        diagnostics: DiagnosticsEngine,
+        completion: @escaping (Result<Manifest, Error>) -> Void
+    ) {
         // Load the manifest, bracketed by the calls to the delegate callbacks. The delegate callback is only passed any diagnostics emited during the parsing of the manifest, but they are also forwarded up to the caller.
         delegate?.willLoadManifest(packagePath: packagePath, url: url, version: version, packageKind: packageKind)
         let manifestDiagnostics = DiagnosticsEngine(handlers: [{diagnostics.emit($0)}])
-        let manifest: Manifest? = diagnostics.with(location: PackageLocation.Local(packagePath: packagePath)) { diagnostics in
-            return diagnostics.wrap {
+        diagnostics.with(location: PackageLocation.Local(packagePath: packagePath)) { diagnostics in
+            do {
                 // Load the tools version for the package.
-                let toolsVersion = try toolsVersionLoader.load(
-                    at: packagePath, fileSystem: fileSystem)
+                let toolsVersion = try toolsVersionLoader.load(at: packagePath, fileSystem: fileSystem)
 
                 // Validate the tools version.
-                try toolsVersion.validateToolsVersion(
-                    currentToolsVersion, packagePath: packagePath.pathString)
+                try toolsVersion.validateToolsVersion(currentToolsVersion, packagePath: packagePath.pathString)
 
                 // Load the manifest.
-                return try manifestLoader.load(
-                    package: packagePath,
-                    baseURL: url,
-                    version: version,
-                    toolsVersion: toolsVersion,
-                    packageKind: packageKind,
-                    diagnostics: diagnostics
-                )
+                manifestLoader.load(package: packagePath,
+                                    baseURL: url,
+                                    version: version,
+                                    toolsVersion: toolsVersion,
+                                    packageKind: packageKind,
+                                    diagnostics: diagnostics,
+                                    on: self.queue) { result in
+
+                    switch result {
+                    case .failure(let error):
+                        diagnostics.emit(error)
+                    case .success(let manifest):
+                        self.delegate?.didLoadManifest(packagePath: packagePath, url: url, version: version, packageKind: packageKind, manifest: manifest, diagnostics: manifestDiagnostics.diagnostics)
+                    }
+                    completion(result)
+                }
+            } catch {
+                diagnostics.emit(error)
+                completion(.failure(error))
             }
         }
-        delegate?.didLoadManifest(packagePath: packagePath, url: url, version: version, packageKind: packageKind, manifest: manifest, diagnostics: manifestDiagnostics.diagnostics)
-        return manifest
     }
 
     fileprivate func updateBinaryArtifacts(
@@ -1584,6 +1627,7 @@ extension Workspace {
         let tempDiagnostics = DiagnosticsEngine()
 
         var authProvider: AuthorizationProviding? = nil
+        var didDownloadAnyArtifact = false
         #if os(macOS)
         // Netrc feature currently only supported on macOS 10.13+ due to dependency
         // on NSTextCheckingResult.range(with:)
@@ -1593,9 +1637,14 @@ extension Workspace {
         #endif
         for artifact in artifacts {
             group.enter()
+            defer { group.leave() }
 
             guard case .remote(let url, let checksum, _) = artifact.source, let destination = path(for: artifact) else {
                 throw InternalError("Can't download local artifact")
+            }
+
+            guard let parsedURL = URL(string: url) else {
+                throw StringError("invalid url \(url)")
             }
 
             let parentDirectory = destination.parentDirectory
@@ -1607,12 +1656,10 @@ extension Workspace {
                 continue
             }
 
-            guard let parsedURL = URL(string: url) else {
-                throw StringError("invalid url \(url)")
-            }
             let archivePath = parentDirectory.appending(component: parsedURL.lastPathComponent)
 
-
+            group.enter()
+            didDownloadAnyArtifact = true
             downloader.downloadFile(
                 at: parsedURL,
                 to: archivePath,
@@ -1624,6 +1671,8 @@ extension Workspace {
                         totalBytesToDownload: totalBytesToDownload)
                 },
                 completion: { downloadResult in
+                    defer { group.leave() }
+
                     switch downloadResult {
                     case .success:
                         let archiveChecksum = self.checksum(
@@ -1632,35 +1681,37 @@ extension Workspace {
                         guard archiveChecksum == checksum else {
                             tempDiagnostics.emit(.artifactInvalidChecksum(targetName: artifact.targetName, expectedChecksum: checksum, actualChecksum: archiveChecksum))
                             tempDiagnostics.wrap { try self.fileSystem.removeFileTree(archivePath) }
-                            group.leave()
                             return
                         }
 
+                        group.enter()
                         self.archiver.extract(from: archivePath, to: parentDirectory, completion: { extractResult in
+                            defer { group.leave() }
+
                             switch extractResult {
                             case .success:
                                 if let expectedPath = self.path(for: artifact), !self.fileSystem.isDirectory(expectedPath) {
                                     tempDiagnostics.emit(.artifactNotFound(targetName: artifact.targetName, artifactName: expectedPath.basename))
                                 }
-                                break
                             case .failure(let error):
                                 let reason = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
                                 tempDiagnostics.emit(.artifactFailedExtraction(targetName: artifact.targetName, reason: reason))
                             }
 
                             tempDiagnostics.wrap { try self.fileSystem.removeFileTree(archivePath) }
-                            group.leave()
                         })
                     case .failure(let error):
                         let reason = error.errorDescription ?? error.localizedDescription
                         tempDiagnostics.emit(.artifactFailedDownload(targetName: artifact.targetName, reason: reason))
-                        group.leave()
                     }
                 })
         }
 
         group.wait()
-        delegate?.didDownloadBinaryArtifacts()
+
+        if didDownloadAnyArtifact {
+            delegate?.didDownloadBinaryArtifacts()
+        }
 
         for diagnostic in tempDiagnostics.diagnostics {
             diagnostics.emit(diagnostic.message, location: diagnostic.location)
@@ -1696,7 +1747,8 @@ extension Workspace {
         // Ensure the cache path exists.
         createCacheDirectories(with: diagnostics)
 
-        let rootManifests = loadRootManifests(packages: root.packages, diagnostics: diagnostics)
+        // FIXME: this should not block
+        let rootManifests = try temp_await { self.loadRootManifests(packages: root.packages, diagnostics: diagnostics, completion: $0) }
         let graphRoot = PackageGraphRoot(input: root, manifests: rootManifests, explicitProduct: explicitProduct)
 
         // Load the pins store or abort now.
@@ -1788,8 +1840,9 @@ extension Workspace {
         // Ensure the cache path exists and validate that edited dependencies.
         createCacheDirectories(with: diagnostics)
 
+        // FIXME: this should not block
         // Load the root manifests and currently checked out manifests.
-        let rootManifests = loadRootManifests(packages: root.packages, diagnostics: diagnostics)
+        let rootManifests = try temp_await { self.loadRootManifests(packages: root.packages, diagnostics: diagnostics, completion: $0) }
 
         // Load the current manifests.
         let graphRoot = PackageGraphRoot(input: root, manifests: rootManifests, explicitProduct: explicitProduct)
@@ -1842,13 +1895,15 @@ extension Workspace {
 
         // Perform dependency resolution.
         let resolver = createResolver(pinsMap: pinsStore.pinsMap)
-        activeResolver = resolver
+        self.activeResolver = resolver
 
         let result = resolveDependencies(
             resolver: resolver,
             constraints: constraints,
             diagnostics: diagnostics)
-        activeResolver = nil
+
+        // Reset the active resolver.
+        self.activeResolver = nil
 
         guard !diagnostics.hasErrors else {
             return currentManifests
@@ -1872,10 +1927,7 @@ extension Workspace {
         // through a ssh url but its new reference is now changed to http.
         let missing = updatedDependencyManifests.computePackageURLs().missing
         if !missing.isEmpty {
-            // Check if an override package has a mismatching basename.
-            if self.didDiagnosePackageOverrideBasenameMismatch(updatedDependencyManifests, diagnostics) {
-                return updatedDependencyManifests
-            } else if retryOnPackagePathMismatch {
+            if retryOnPackagePathMismatch {
                 // Retry resolution which will most likely resolve correctly now since
                 // we have the manifest files of all the dependencies.
                 return try self._resolve(
@@ -1921,26 +1973,6 @@ extension Workspace {
             diagnostics: diagnostics)
 
         return updatedDependencyManifests
-    }
-
-    private func didDiagnosePackageOverrideBasenameMismatch(
-        _ dependencyManifests: DependencyManifests,
-        _ diagnostics: DiagnosticsEngine
-    ) -> Bool {
-        let rootManifests = dependencyManifests.root.manifests.spm_createDictionary{ ($0.name, $0) }
-
-        for missingURLs in dependencyManifests.computePackageURLs().missing {
-            guard let manifest = loadManifest(forURL: missingURLs.path, diagnostics: diagnostics) else { continue }
-            if let override = rootManifests[manifest.name] {
-                let overrideIdentity = PackageIdentity(url: override.url)
-                let manifestIdentity = PackageIdentity(url: manifest.url)
-
-                diagnostics.emit(error: "unable to override package '\(manifest.name)' because its basename '\(manifestIdentity)' doesn't match directory name '\(overrideIdentity)'")
-
-                return true
-            }
-        }
-        return false
     }
 
     public enum ResolutionPrecomputationResult: Equatable {
@@ -2003,7 +2035,7 @@ extension Workspace {
             return
         }
 
-		let pins = pinsStore.pinsMap.keys
+        let pins = pinsStore.pinsMap.keys
         let requiredURLs = dependencyManifests.computePackageURLs().required
 
         for dependency in state.dependencies {

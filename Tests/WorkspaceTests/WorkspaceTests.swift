@@ -3784,12 +3784,14 @@ final class WorkspaceTests: XCTestCase {
 
         // From here the API should be simple and straightforward:
         let diagnostics = DiagnosticsEngine()
-        let manifest = try ManifestLoader.loadManifest(
-            packagePath: package, swiftCompiler: swiftCompiler, swiftCompilerFlags: [], packageKind: .local
-        )
-        let loadedPackage = try PackageBuilder.loadPackage(
-            packagePath: package, swiftCompiler: swiftCompiler, swiftCompilerFlags: [], xcTestMinimumDeploymentTargets: [:], diagnostics: diagnostics
-        )
+        let manifest = try tsc_await {
+            ManifestLoader.loadManifest(packagePath: package, swiftCompiler: swiftCompiler, swiftCompilerFlags: [], packageKind: .local, on: .global(), completion: $0)
+        }
+
+        let loadedPackage = try tsc_await {
+            PackageBuilder.loadPackage(packagePath: package, swiftCompiler: swiftCompiler, swiftCompilerFlags: [], xcTestMinimumDeploymentTargets: [:], diagnostics: diagnostics, on: .global(), completion: $0)
+        }
+
         let graph = try Workspace.loadGraph(
             packagePath: package, swiftCompiler: swiftCompiler, swiftCompilerFlags: [], diagnostics: diagnostics
         )
@@ -3892,7 +3894,7 @@ final class WorkspaceTests: XCTestCase {
 
         workspace.checkPackageGraph(roots: ["Overridden/bazzz-master"], deps: deps) { _, diagnostics in
             DiagnosticsEngineTester(diagnostics, ignoreNotes: true) { result in
-                result.check(diagnostic: .equal("unable to override package 'Baz' because its basename 'bazzz' doesn't match directory name 'bazzz-master'"), behavior: .error)
+                result.check(diagnostic: .equal("unable to override package 'Baz' because its identity 'bazzz' doesn't match override's identity (directory name) 'bazzz-master'"), behavior: .error)
             }
         }
     }
@@ -4660,6 +4662,524 @@ final class WorkspaceTests: XCTestCase {
             // Needed when cross‐compiling for Android. 2020‐03‐01
             "-sdk", sdk.pathString,
         ])
+    }
+
+    func testDuplicateIdentityAtRoot() throws {
+        let sandbox = AbsolutePath("/tmp/ws/")
+        let fs = InMemoryFileSystem()
+
+        let workspace = try MockWorkspace(
+            sandbox: sandbox,
+            fs: fs,
+            roots: [
+                MockPackage(
+                    name: "Root",
+                    targets: [
+                        MockTarget(name: "RootTarget", dependencies: [
+                            .product(name: "FooProduct", package: "FooUtilityPackage"),
+                            .product(name: "BarProduct", package: "BarUtilityPackage")
+                        ]),
+                    ],
+                    products: [],
+                    dependencies: [
+                        MockDependency(name: "FooUtilityPackage", path: "foo/utility", requirement: .upToNextMajor(from: "1.0.0")),
+                        MockDependency(name: "BarUtilityPackage", path: "bar/utility", requirement: .upToNextMajor(from: "1.0.0")),
+                    ],
+                    toolsVersion: .v5
+                ),
+            ],
+            packages: [
+                MockPackage(
+                    name: "FooUtilityPackage",
+                    path: "foo/utility",
+                    targets: [
+                        MockTarget(name: "FooTarget"),
+                    ],
+                    products: [
+                        MockProduct(name: "FooProduct", targets: ["FooTarget"]),
+                    ],
+                    versions: ["1.0.0", "2.0.0"]
+                ),
+                // this package never gets loaded since the dependency declaration identity is the same as "FooPackage"
+                MockPackage(
+                    name: "BarUtilityPackage",
+                    path: "bar/utility",
+                    targets: [
+                        MockTarget(name: "BarTarget"),
+                    ],
+                    products: [
+                        MockProduct(name: "BarProduct", targets: ["BarTarget"]),
+                    ],
+                    versions: ["1.0.0", "2.0.0"]
+                ),
+            ]
+        )
+
+        workspace.checkPackageGraph(roots: ["Root"]) { graph, diagnostics in
+            DiagnosticsEngineTester(diagnostics) { result in
+                result.check(
+                    diagnostic: "'Root' dependency on '/tmp/ws/pkgs/bar/utility' conflicts with dependency on '/tmp/ws/pkgs/foo/utility' which has the same identity 'utility'",
+                    behavior: .error,
+                    location: "'Root' /tmp/ws/roots/Root"
+                )
+            }
+        }
+    }
+
+    func testDuplicateNameAtRoot() throws {
+        let sandbox = AbsolutePath("/tmp/ws/")
+        let fs = InMemoryFileSystem()
+
+        let workspace = try MockWorkspace(
+            sandbox: sandbox,
+            fs: fs,
+            roots: [
+                MockPackage(
+                    name: "Root",
+                    targets: [
+                        MockTarget(name: "RootTarget", dependencies: [
+                            .product(name: "FooProduct", package: "FooPackage"),
+                            .product(name: "BarProduct", package: "BarPackage")
+                        ]),
+                    ],
+                    products: [],
+                    dependencies: [
+                        MockDependency(name: "FooPackage", path: "foo", requirement: .upToNextMajor(from: "1.0.0")),
+                        MockDependency(name: "FooPackage", path: "bar", requirement: .upToNextMajor(from: "1.0.0")),
+                    ],
+                    toolsVersion: .v5
+                ),
+            ],
+            packages: [
+                MockPackage(
+                    name: "FooPackage",
+                    path: "foo",
+                    targets: [
+                        MockTarget(name: "FooTarget"),
+                    ],
+                    products: [
+                        MockProduct(name: "FooProduct", targets: ["FooTarget"]),
+                    ],
+                    versions: ["1.0.0", "2.0.0"]
+                ),
+                // this package never gets loaded since the dependency declaration name is the same as "FooPackage"
+                MockPackage(
+                    name: "BarPackage",
+                    path: "bar",
+                    targets: [
+                        MockTarget(name: "BarTarget"),
+                    ],
+                    products: [
+                        MockProduct(name: "BarProduct", targets: ["BarTarget"]),
+                    ],
+                    versions: ["1.0.0", "2.0.0"]
+                ),
+            ]
+        )
+
+        workspace.checkPackageGraph(roots: ["Root"]) { graph, diagnostics in
+            DiagnosticsEngineTester(diagnostics) { result in
+                result.check(
+                    diagnostic: "'Root' dependency on '/tmp/ws/pkgs/bar' conflicts with dependency on '/tmp/ws/pkgs/foo' which has the same explicit name 'FooPackage'",
+                    behavior: .error,
+                    location: "'Root' /tmp/ws/roots/Root"
+                )
+            }
+        }
+    }
+
+    func testDuplicateTransitiveIdentityWithNames() throws {
+        let sandbox = AbsolutePath("/tmp/ws/")
+        let fs = InMemoryFileSystem()
+
+        let workspace = try MockWorkspace(
+            sandbox: sandbox,
+            fs: fs,
+            roots: [
+                MockPackage(
+                    name: "Root",
+                    targets: [
+                        MockTarget(name: "RootTarget", dependencies: [
+                            .product(name: "FooUtilityProduct", package: "FooUtilityPackage"),
+                            .product(name: "BarProduct", package: "BarPackage")
+                        ]),
+                    ],
+                    products: [],
+                    dependencies: [
+                        MockDependency(name: "FooUtilityPackage", path: "foo/utility", requirement: .upToNextMajor(from: "1.0.0")),
+                        MockDependency(name: "BarPackage", path: "bar", requirement: .upToNextMajor(from: "1.0.0")),
+                    ],
+                    toolsVersion: .v5
+                ),
+            ],
+            packages: [
+                MockPackage(
+                    name: "FooUtilityPackage",
+                    path: "foo/utility",
+                    targets: [
+                        MockTarget(name: "FooUtilityTarget"),
+                    ],
+                    products: [
+                        MockProduct(name: "FooUtilityProduct", targets: ["FooUtilityTarget"]),
+                    ],
+                    versions: ["1.0.0"]
+                ),
+                MockPackage(
+                    name: "BarPackage",
+                    path: "bar",
+                    targets: [
+                        MockTarget(name: "BarTarget", dependencies: [
+                            .product(name: "OtherUtilityProduct", package: "OtherUtilityPackage"),
+                        ]),
+                    ],
+                    products: [
+                        MockProduct(name: "BarProduct", targets: ["BarTarget"]),
+                    ],
+                    dependencies: [
+                        MockDependency(name: "OtherUtilityPackage", path: "other/utility", requirement: .upToNextMajor(from: "1.0.0")),
+                    ],
+                    versions: ["1.0.0"]
+                ),
+                // this package never gets loaded since its identity is the same as "FooPackage"
+                MockPackage(
+                    name: "OtherUtilityPackage",
+                    path: "other/utility",
+                    targets: [
+                        MockTarget(name: "OtherUtilityTarget"),
+                    ],
+                    products: [
+                        MockProduct(name: "OtherUtilityProduct", targets: ["OtherUtilityTarget"]),
+                    ],
+                    versions: ["1.0.0"]
+                ),
+            ]
+        )
+
+        // FIXME: rdar://72940946
+        // we need to improve this situation or diagnostics when working on identity
+        workspace.checkPackageGraph(roots: ["Root"]) { graph, diagnostics in
+            DiagnosticsEngineTester(diagnostics) { result in
+                result.check(
+                    diagnostic: "'BarPackage' dependency on '/tmp/ws/pkgs/other/utility' conflicts with dependency on '/tmp/ws/pkgs/foo/utility' which has the same identity 'utility'",
+                    behavior: .error,
+                    location: "'BarPackage' /tmp/ws/pkgs/bar"
+                )
+            }
+        }
+    }
+
+    func testDuplicateTransitiveIdentityWithoutNames() throws {
+        let sandbox = AbsolutePath("/tmp/ws/")
+        let fs = InMemoryFileSystem()
+
+        let workspace = try MockWorkspace(
+            sandbox: sandbox,
+            fs: fs,
+            roots: [
+                MockPackage(
+                    name: "Root",
+                    targets: [
+                        MockTarget(name: "RootTarget", dependencies: [
+                            .product(name: "FooUtilityProduct", package: "FooUtilityPackage"),
+                            .product(name: "BarProduct", package: "BarPackage")
+                        ]),
+                    ],
+                    products: [],
+                    dependencies: [
+                        MockDependency(name: nil, path: "foo/utility", requirement: .upToNextMajor(from: "1.0.0")),
+                        MockDependency(name: nil, path: "bar", requirement: .upToNextMajor(from: "1.0.0")),
+                    ],
+                    toolsVersion: .v5
+                ),
+            ],
+            packages: [
+                MockPackage(
+                    name: "FooUtilityPackage",
+                    path: "foo/utility",
+                    targets: [
+                        MockTarget(name: "FooUtilityTarget"),
+                    ],
+                    products: [
+                        MockProduct(name: "FooUtilityProduct", targets: ["FooUtilityTarget"]),
+                    ],
+                    versions: ["1.0.0"]
+                ),
+                MockPackage(
+                    name: "BarPackage",
+                    path: "bar",
+                    targets: [
+                        MockTarget(name: "BarTarget", dependencies: [
+                            .product(name: "OtherUtilityProduct", package: "OtherUtilityPackage"),
+                        ]),
+                    ],
+                    products: [
+                        MockProduct(name: "BarProduct", targets: ["BarTarget"]),
+                    ],
+                    dependencies: [
+                        MockDependency(name: nil, path: "other-foo/utility", requirement: .upToNextMajor(from: "1.0.0")),
+                    ],
+                    versions: ["1.0.0"]
+                ),
+                // this package never gets loaded since its identity is the same as "FooPackage"
+                MockPackage(
+                    name: "OtherUtilityPackage",
+                    path: "other/utility",
+                    targets: [
+                        MockTarget(name: "OtherUtilityTarget"),
+                    ],
+                    products: [
+                        MockProduct(name: "OtherUtilityProduct", targets: ["OtherUtilityTarget"]),
+                    ],
+                    versions: ["1.0.0"]
+                ),
+            ]
+        )
+
+        // FIXME: rdar://72940946
+        // we need to improve this situation or diagnostics when working on identity
+        workspace.checkPackageGraph(roots: ["Root"]) { graph, diagnostics in
+            DiagnosticsEngineTester(diagnostics) { result in
+                result.check(
+                    diagnostic: "product 'OtherUtilityProduct' not found in package 'OtherUtilityPackage'. it is required by package 'BarPackage' target 'BarTarget'.",
+                    behavior: .error,
+                    location: "'BarPackage' /tmp/ws/pkgs/bar"
+                )
+            }
+        }
+    }
+
+    func testDuplicateNestedTransitiveIdentityWithNames() throws {
+        let sandbox = AbsolutePath("/tmp/ws/")
+        let fs = InMemoryFileSystem()
+
+        let workspace = try MockWorkspace(
+            sandbox: sandbox,
+            fs: fs,
+            roots: [
+                MockPackage(
+                    name: "Root",
+                    targets: [
+                        MockTarget(name: "RootTarget", dependencies: [
+                            .product(name: "FooUtilityProduct", package: "FooUtilityPackage")
+                        ]),
+                    ],
+                    products: [],
+                    dependencies: [
+                        MockDependency(name: "FooUtilityPackage", path: "foo/utility", requirement: .upToNextMajor(from: "1.0.0")),
+                    ],
+                    toolsVersion: .v5
+                ),
+            ],
+            packages: [
+                MockPackage(
+                    name: "FooUtilityPackage",
+                    path: "foo/utility",
+                    targets: [
+                        MockTarget(name: "FooUtilityTarget", dependencies: [
+                            .product(name: "BarProduct", package: "BarPackage")
+                        ]),
+                    ],
+                    products: [
+                        MockProduct(name: "FooUtilityProduct", targets: ["FooUtilityTarget"]),
+                    ],
+                    dependencies: [
+                        MockDependency(name: "BarPackage", path: "bar", requirement: .upToNextMajor(from: "1.0.0")),
+                    ],
+                    versions: ["1.0.0"]
+                ),
+                MockPackage(
+                    name: "BarPackage",
+                    path: "bar",
+                    targets: [
+                        MockTarget(name: "BarTarget", dependencies: [
+                            .product(name: "OtherUtilityProduct", package: "OtherUtilityPackage"),
+                        ]),
+                    ],
+                    products: [
+                        MockProduct(name: "BarProduct", targets: ["BarTarget"]),
+                    ],
+                    dependencies: [
+                        MockDependency(name: "OtherUtilityPackage", path: "other/utility", requirement: .upToNextMajor(from: "1.0.0")),
+                    ],
+                    versions: ["1.0.0"]
+                ),
+                // this package never gets loaded since its identity is the same as "FooPackage"
+                MockPackage(
+                    name: "OtherUtilityPackage",
+                    path: "other/utility",
+                    targets: [
+                        MockTarget(name: "OtherUtilityTarget"),
+                    ],
+                    products: [
+                        MockProduct(name: "OtherUtilityProduct", targets: ["OtherUtilityTarget"]),
+                    ],
+                    versions: ["1.0.0"]
+                ),
+            ]
+        )
+
+        // FIXME: rdar://72940946
+        // we need to improve this situation or diagnostics when working on identity
+        workspace.checkPackageGraph(roots: ["Root"]) { graph, diagnostics in
+            DiagnosticsEngineTester(diagnostics) { result in
+                result.check(
+                    diagnostic: "cyclic dependency declaration found: Root -> FooUtilityPackage -> BarPackage -> FooUtilityPackage",
+                    behavior: .error,
+                    location: "<unknown>"
+                )
+            }
+        }
+    }
+
+    func testDuplicateNestedTransitiveIdentityWithoutNames() throws {
+        let sandbox = AbsolutePath("/tmp/ws/")
+        let fs = InMemoryFileSystem()
+
+        let workspace = try MockWorkspace(
+            sandbox: sandbox,
+            fs: fs,
+            roots: [
+                MockPackage(
+                    name: "Root",
+                    targets: [
+                        MockTarget(name: "RootTarget", dependencies: [
+                            .product(name: "FooUtilityProduct", package: "FooUtilityPackage")
+                        ]),
+                    ],
+                    products: [],
+                    dependencies: [
+                        MockDependency(name: nil, path: "foo/utility", requirement: .upToNextMajor(from: "1.0.0")),
+                    ],
+                    toolsVersion: .v5
+                ),
+            ],
+            packages: [
+                MockPackage(
+                    name: "FooUtilityPackage",
+                    path: "foo/utility",
+                    targets: [
+                        MockTarget(name: "FooUtilityTarget", dependencies: [
+                            .product(name: "BarProduct", package: "BarPackage")
+                        ]),
+                    ],
+                    products: [
+                        MockProduct(name: "FooUtilityProduct", targets: ["FooUtilityTarget"]),
+                    ],
+                    dependencies: [
+                        MockDependency(name: nil, path: "bar", requirement: .upToNextMajor(from: "1.0.0")),
+                    ],
+                    versions: ["1.0.0"]
+                ),
+                MockPackage(
+                    name: "BarPackage",
+                    path: "bar",
+                    targets: [
+                        MockTarget(name: "BarTarget", dependencies: [
+                            .product(name: "OtherUtilityProduct", package: "OtherUtilityPackage"),
+                        ]),
+                    ],
+                    products: [
+                        MockProduct(name: "BarProduct", targets: ["BarTarget"]),
+                    ],
+                    dependencies: [
+                        MockDependency(name: nil, path: "other/utility", requirement: .upToNextMajor(from: "1.0.0")),
+                    ],
+                    versions: ["1.0.0"]
+                ),
+                // this package never gets loaded since its identity is the same as "FooPackage"
+                MockPackage(
+                    name: "OtherUtilityPackage",
+                    path: "other/utility",
+                    targets: [
+                        MockTarget(name: "OtherUtilityTarget"),
+                    ],
+                    products: [
+                        MockProduct(name: "OtherUtilityProduct", targets: ["OtherUtilityTarget"]),
+                    ],
+                    versions: ["1.0.0"]
+                ),
+            ]
+        )
+
+        // FIXME: rdar://72940946
+        // we need to improve this situation or diagnostics when working on identity
+        workspace.checkPackageGraph(roots: ["Root"]) { graph, diagnostics in
+            DiagnosticsEngineTester(diagnostics) { result in
+                result.check(
+                    diagnostic: "cyclic dependency declaration found: Root -> FooUtilityPackage -> BarPackage -> FooUtilityPackage",
+                    behavior: .error,
+                    location: "<unknown>"
+                )
+            }
+        }
+    }
+
+    func testRootPathConflictsWithTransitiveIdentity() throws {
+        let sandbox = AbsolutePath("/tmp/ws/")
+        let fs = InMemoryFileSystem()
+
+        let workspace = try MockWorkspace(
+            sandbox: sandbox,
+            fs: fs,
+            roots: [
+                MockPackage(
+                    name: "Root",
+                    path: "foo",
+                    targets: [
+                        MockTarget(name: "RootTarget", dependencies: [
+                            .product(name: "BarProduct", package: "BarPackage")
+                        ]),
+                    ],
+                    products: [],
+                    dependencies: [
+                        MockDependency(name: "BarPackage", path: "bar", requirement: .upToNextMajor(from: "1.0.0")),
+                    ],
+                    toolsVersion: .v5
+                ),
+            ],
+            packages: [
+                MockPackage(
+                    name: "BarPackage",
+                    path: "bar",
+                    targets: [
+                        MockTarget(name: "BarTarget", dependencies: [
+                            .product(name: "FooProduct", package: "FooPackage"),
+                        ]),
+                    ],
+                    products: [
+                        MockProduct(name: "BarProduct", targets: ["BarTarget"]),
+                    ],
+                    dependencies: [
+                        MockDependency(name: "FooPackage", path: "foo", requirement: .upToNextMajor(from: "1.0.0")),
+                    ],
+                    versions: ["1.0.0"]
+                ),
+                // this package never gets loaded since its identity is the same as "FooPackage"
+                MockPackage(
+                    name: "FooPackage",
+                    path: "foo",
+                    targets: [
+                        MockTarget(name: "FooTarget"),
+                    ],
+                    products: [
+                        MockProduct(name: "FooProduct", targets: ["FooTarget"]),
+                    ],
+                    versions: ["1.0.0"]
+                ),
+            ]
+        )
+
+        // FIXME: rdar://72940946
+        // we need to improve this situation or diagnostics when working on identity
+        workspace.checkPackageGraph(roots: ["foo"]) { graph, diagnostics in
+            DiagnosticsEngineTester(diagnostics) { result in
+                result.check(
+                    diagnostic: "cyclic dependency declaration found: Root -> BarPackage -> Root",
+                    behavior: .error,
+                    location: "<unknown>"
+                )
+            }
+        }
     }
 }
 

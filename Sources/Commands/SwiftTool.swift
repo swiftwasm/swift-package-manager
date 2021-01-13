@@ -304,6 +304,7 @@ public class SwiftTool {
     /// workspace is not needed, infact it would be an error to ask for the workspace object
     /// for package init because the Manifest file should *not* present.
     private var _workspace: Workspace?
+    private var _workspaceDelegate: ToolWorkspaceDelegate?
 
     /// Create an instance of this tool.
     ///
@@ -416,6 +417,10 @@ public class SwiftTool {
         if options.enableTestDiscovery {
             diagnostics.emit(warning: "'--enable-test-discovery' option is deprecated; tests are automatically discovered on all platforms")
         }
+
+        if options.shouldDisableManifestCaching {
+            diagnostics.emit(warning: "'--disable-package-manifest-caching' option is deprecated; use '--manifest-caching' instead")
+        }
     }
 
     func editablesPath() throws -> AbsolutePath {
@@ -472,22 +477,34 @@ public class SwiftTool {
     }
 
     private func getCachePath(fileSystem: FileSystem = localFileSystem) throws -> AbsolutePath? {
-        // Create the default cache directory.
-        let idiomaticCachePath = fileSystem.swiftPMCacheDirectory
-        if !fileSystem.exists(idiomaticCachePath) {
-            try fileSystem.createDirectory(idiomaticCachePath, recursive: true)
-        }
-        // Create ~/.swiftpm if necessary
-        if !fileSystem.exists(fileSystem.dotSwiftPM) {
-            try fileSystem.createDirectory(fileSystem.dotSwiftPM, recursive: true)
-        }
-        // Create ~/.swiftpm/cache symlink if necessary
-        let dotSwiftPMCachesPath = fileSystem.dotSwiftPM.appending(component: "cache")
-        if !fileSystem.exists(dotSwiftPMCachesPath, followSymlink: false) {
-            try fileSystem.createSymbolicLink(dotSwiftPMCachesPath, pointingAt: idiomaticCachePath, relative: false)
+        if let explicitCachePath = options.cachePath {
+            // Create the explicit cache path if necessary
+            if !fileSystem.exists(explicitCachePath) {
+                try fileSystem.createDirectory(explicitCachePath, recursive: true)
+            }
+            return explicitCachePath
         }
 
-        return options.skipCache ? nil : options.cachePath ?? idiomaticCachePath
+        do {
+            // Create the default cache directory.
+            let idiomaticCachePath = fileSystem.swiftPMCacheDirectory
+            if !fileSystem.exists(idiomaticCachePath) {
+                try fileSystem.createDirectory(idiomaticCachePath, recursive: true)
+            }
+            // Create ~/.swiftpm if necessary
+            if !fileSystem.exists(fileSystem.dotSwiftPM) {
+                try fileSystem.createDirectory(fileSystem.dotSwiftPM, recursive: true)
+            }
+            // Create ~/.swiftpm/cache symlink if necessary
+            let dotSwiftPMCachesPath = fileSystem.dotSwiftPM.appending(component: "cache")
+            if !fileSystem.exists(dotSwiftPMCachesPath, followSymlink: false) {
+                try fileSystem.createSymbolicLink(dotSwiftPMCachesPath, pointingAt: idiomaticCachePath, relative: false)
+            }
+            return idiomaticCachePath
+        } catch {
+            self.diagnostics.emit(warning: "Failed creating default cache locations, \(error)")
+            return nil
+        }
     }
 
     /// Returns the currently active workspace.
@@ -495,9 +512,11 @@ public class SwiftTool {
         if let workspace = _workspace {
             return workspace
         }
+
         let isVerbose = options.verbosity != 0
         let delegate = ToolWorkspaceDelegate(self.stdoutStream, isVerbose: isVerbose, diagnostics: diagnostics)
         let provider = GitRepositoryProvider(processSet: processSet)
+        let cachePath = self.options.useRepositoriesCache ? try self.getCachePath() : .none
         let workspace = Workspace(
             dataPath: buildPath,
             editablesPath: try editablesPath(),
@@ -511,9 +530,10 @@ public class SwiftTool {
             isResolverPrefetchingEnabled: options.shouldEnableResolverPrefetching,
             skipUpdate: options.skipDependencyUpdate,
             enableResolverTrace: options.enableResolverTrace,
-            cachePath: try self.getCachePath()
+            cachePath: cachePath
         )
         _workspace = workspace
+        _workspaceDelegate = delegate
         return workspace
     }
 
@@ -584,30 +604,39 @@ public class SwiftTool {
         return try _manifestLoader.get()
     }
 
-    private func canUseBuildManifestCaching() throws -> Bool {
+    private func canUseCachedBuildManifest() throws -> Bool {
+        if !self.options.cacheBuildManifest {
+            return false
+        }
+
         let buildParameters = try self.buildParameters()
         let haveBuildManifestAndDescription =
-        localFileSystem.exists(buildParameters.llbuildManifest) &&
-        localFileSystem.exists(buildParameters.buildDescriptionPath)
+            localFileSystem.exists(buildParameters.llbuildManifest) &&
+            localFileSystem.exists(buildParameters.buildDescriptionPath)
+
+        if !haveBuildManifestAndDescription {
+            return false
+        }
 
         // Perform steps for build manifest caching if we can enabled it.
         //
         // FIXME: We don't add edited packages in the package structure command yet (SR-11254).
-        let hasEditedPackages = try getActiveWorkspace().state.dependencies.contains(where: { $0.isEdited })
+        let hasEditedPackages = try self.getActiveWorkspace().state.dependencies.contains(where: { $0.isEdited })
+        if hasEditedPackages {
+            return false
+        }
 
-        let enableBuildManifestCaching = ProcessEnv.vars.keys.contains("SWIFTPM_ENABLE_BUILD_MANIFEST_CACHING") || options.enableBuildManifestCaching
-
-        return enableBuildManifestCaching && haveBuildManifestAndDescription && !hasEditedPackages
+        return true
     }
 
-    func createBuildOperation(explicitProduct: String? = nil, useBuildManifestCaching: Bool = true) throws -> BuildOperation {
+    func createBuildOperation(explicitProduct: String? = nil, cacheBuildManifest: Bool = true) throws -> BuildOperation {
         // Load a custom package graph which has a special product for REPL.
         let graphLoader = { try self.loadPackageGraph(explicitProduct: explicitProduct) }
 
         // Construct the build operation.
         let buildOp = try BuildOperation(
             buildParameters: buildParameters(),
-            useBuildManifestCaching: useBuildManifestCaching && canUseBuildManifestCaching(),
+            cacheBuildManifest: cacheBuildManifest && self.canUseCachedBuildManifest(),
             packageGraphLoader: graphLoader,
             diagnostics: diagnostics,
             stdoutStream: self.stdoutStream
@@ -618,14 +647,14 @@ public class SwiftTool {
         return buildOp
     }
 
-    func createBuildSystem(explicitProduct: String? = nil, useBuildManifestCaching: Bool = true, buildParameters: BuildParameters? = nil) throws -> BuildSystem {
+    func createBuildSystem(explicitProduct: String? = nil, buildParameters: BuildParameters? = nil) throws -> BuildSystem {
         let buildSystem: BuildSystem
         switch options.buildSystem {
         case .native:
             let graphLoader = { try self.loadPackageGraph(explicitProduct: explicitProduct) }
             buildSystem = try BuildOperation(
                 buildParameters: buildParameters ?? self.buildParameters(),
-                useBuildManifestCaching: useBuildManifestCaching && canUseBuildManifestCaching(),
+                cacheBuildManifest: self.canUseCachedBuildManifest(),
                 packageGraphLoader: graphLoader,
                 diagnostics: diagnostics,
                 stdoutStream: stdoutStream
@@ -650,6 +679,7 @@ public class SwiftTool {
     func buildParameters() throws -> BuildParameters {
         return try _buildParameters.get()
     }
+
     private lazy var _buildParameters: Result<BuildParameters, Swift.Error> = {
         return Result(catching: {
             let toolchain = try self.getToolchain()
@@ -752,11 +782,23 @@ public class SwiftTool {
 
     private lazy var _manifestLoader: Result<ManifestLoader, Swift.Error> = {
         return Result(catching: {
-            try ManifestLoader(
+            let cachePath: AbsolutePath?
+            switch (self.options.shouldDisableManifestCaching, self.options.manifestCachingMode) {
+            case (true, _):
+                // backwards compatibility
+                cachePath = nil
+            case (false, .none):
+                cachePath = nil
+            case (false, .local):
+                cachePath = self.buildPath
+            case (false, .shared):
+                cachePath = try self.getCachePath().map{ $0.appending(component: "manifests") }
+            }
+            return try ManifestLoader(
                 // Always use the host toolchain's resources for parsing manifest.
                 manifestResources: self._hostToolchain.get().manifestResources,
                 isManifestSandboxEnabled: !self.options.shouldDisableSandbox,
-                cacheDir: self.options.shouldDisableManifestCaching ? nil : self.buildPath,
+                cacheDir: cachePath,
                 extraManifestFlags: self.options.manifestFlags
             )
         })

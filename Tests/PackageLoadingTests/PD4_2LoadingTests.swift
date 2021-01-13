@@ -355,6 +355,24 @@ class PackageDescription4_2LoadingTests: PackageDescriptionLoadingTests {
             XCTAssertEqual(manifest.name, "Trivial")
         }
     }
+    
+    // Check that ancient `Package@swift-3.swift` manifests are properly treated as 3.1 even without a tools-version comment.
+    func testVersionSpecificLoadingOfVersion3Manifest() throws {
+        // Create a temporary FS to hold the package manifests.
+        let fs = InMemoryFileSystem()
+        // Write a regular manifest with a tools version comment, and a `Package@swift-3.swift` manifest without one.
+        let packageDir = AbsolutePath.root
+        let manifestContents = "import PackageDescription\nlet package = Package(name: \"Trivial\")"
+        try fs.writeFileContents(
+            packageDir.appending(component: Manifest.basename + ".swift"),
+            bytes: ByteString(encodingAsUTF8: "// swift-tools-version:4.0\n" + manifestContents))
+        try fs.writeFileContents(
+            packageDir.appending(component: Manifest.basename + "@swift-3.swift"),
+            bytes: ByteString(encodingAsUTF8: manifestContents))
+        // Check we can load the manifest.
+        let manifest = try manifestLoader.load(package: packageDir, baseURL: "/foo", toolsVersion: .v4_2, packageKind: .root, fileSystem: fs)
+        XCTAssertEqual(manifest.name, "Trivial")
+    }
 
     func testRuntimeManifestErrors() throws {
         let stream = BufferedOutputByteStream()
@@ -573,7 +591,7 @@ class PackageDescription4_2LoadingTests: PackageDescriptionLoadingTests {
 
             // Resetting the cache should allow us to remove the cache
             // directory without triggering assertions in sqlite.
-            try manifestLoader.resetCache()
+            try manifestLoader.purgeCache()
             try localFileSystem.removeFileTree(path)
         }
     }
@@ -679,7 +697,9 @@ class PackageDescription4_2LoadingTests: PackageDescriptionLoadingTests {
         }
     }
 
-    func testConcurrency() throws {
+    // run this with TSAN/ASAN to detect concurrency issues
+    func testConcurrencyWithWarmup() throws {
+        let total = 1000
         try testWithTemporaryDirectory { path in
 
             let manifestPath = path.appending(components: "pkg", "Package.swift")
@@ -697,34 +717,107 @@ class PackageDescription4_2LoadingTests: PackageDescriptionLoadingTests {
                     """
             }
 
+            let diagnostics = DiagnosticsEngine()
+            let delegate = ManifestTestDelegate()
+            let manifestLoader = ManifestLoader(manifestResources: Resources.default, cacheDir: path, useInMemoryCache: true, delegate: delegate)
+
+            // warm up caches
+            let manifest = try tsc_await { manifestLoader.load(package: manifestPath.parentDirectory,
+                                                               baseURL: manifestPath.pathString,
+                                                               toolsVersion: .v4_2,
+                                                               packageKind: .local,
+                                                               on: .global(),
+                                                               completion: $0) }
+            XCTAssertEqual(manifest.name, "Trivial")
+            XCTAssertEqual(manifest.targets[0].name, "foo")
+
+
+            let sync = DispatchGroup()
+            for _ in 0 ..< total {
+                sync.enter()
+                manifestLoader.load(package: manifestPath.parentDirectory,
+                                    baseURL: manifestPath.pathString,
+                                    toolsVersion: .v4_2,
+                                    packageKind: .local,
+                                    diagnostics: diagnostics,
+                                    on: .global()) { result in
+                    defer { sync.leave() }
+
+                    switch result {
+                    case .failure(let error):
+                        XCTFail("\(error)")
+                    case .success(let manifest):
+                        XCTAssertEqual(manifest.name, "Trivial")
+                        XCTAssertEqual(manifest.targets[0].name, "foo")
+                    }
+                }
+            }
+
+            if case .timedOut = sync.wait(timeout: .now() + 30) {
+                XCTFail("timeout")
+            }
+
+            XCTAssertEqual(delegate.loaded.count, total+1)
+            XCTAssertFalse(diagnostics.hasWarnings, diagnostics.description)
+            XCTAssertFalse(diagnostics.hasErrors, diagnostics.description)
+        }
+    }
+
+    // run this with TSAN/ASAN to detect concurrency issues
+    func testConcurrencyNoWarmUp() throws {
+        let total = 1000
+        try testWithTemporaryDirectory { path in
+
+            let diagnostics = DiagnosticsEngine()
             let delegate = ManifestTestDelegate()
             let manifestLoader = ManifestLoader(manifestResources: Resources.default, cacheDir: path, useInMemoryCache: true, delegate: delegate)
 
             let sync = DispatchGroup()
-            for _ in 0 ..< 1000 {
-                DispatchQueue.global().async(group: sync) {
-                    let manifest = try? manifestLoader.load(
-                        package: manifestPath.parentDirectory,
-                        baseURL: manifestPath.pathString,
-                        toolsVersion: .v4_2,
-                        packageKind: .local
-                    )
-
-                    guard manifest != nil else {
-                        XCTFail("manifest loading failed")
-                        return
+            for _ in 0 ..< total {
+                let random = Int.random(in: 0 ... total / 4)
+                let manifestPath = path.appending(components: "pkg-\(random)", "Package.swift")
+                if !localFileSystem.exists(manifestPath) {
+                    try localFileSystem.writeFileContents(manifestPath) { stream in
+                        stream <<< """
+                            import PackageDescription
+                            let package = Package(
+                                name: "Trivial-\(random)",
+                                targets: [
+                                    .target(
+                                        name: "foo-\(random)",
+                                        dependencies: []),
+                                ]
+                            )
+                            """
                     }
+                }
 
-                    XCTAssertEqual(manifest?.name, "Trivial")
-                    XCTAssertEqual(manifest?.targets[0].name, "foo")
+                sync.enter()
+                manifestLoader.load(package: manifestPath.parentDirectory,
+                                    baseURL: manifestPath.pathString,
+                                    toolsVersion: .v4_2,
+                                    packageKind: .local,
+                                    diagnostics: diagnostics,
+                                    on: .global()) { result in
+                    defer { sync.leave() }
+
+                    switch result {
+                    case .failure(let error):
+                        XCTFail("\(error)")
+                    case .success(let manifest):
+                        XCTAssertEqual(manifest.name, "Trivial-\(random)")
+                        XCTAssertEqual(manifest.targets[0].name, "foo-\(random)")
+                    }
                 }
             }
 
-            if case .timedOut = sync.wait(timeout: .now() + 120) {
+            if case .timedOut = sync.wait(timeout: .now() + 600) {
                 XCTFail("timeout")
             }
 
-            XCTAssertEqual(delegate.loaded.count, 1000)
+            XCTAssertEqual(delegate.loaded.count, total)
+            XCTAssertFalse(diagnostics.hasWarnings, diagnostics.description)
+            XCTAssertFalse(diagnostics.hasErrors, diagnostics.description)
         }
     }
 
@@ -763,5 +856,11 @@ class PackageDescription4_2LoadingTests: PackageDescriptionLoadingTests {
                 self._parsed
             }
         }
+    }
+}
+
+extension DiagnosticsEngine {
+    public var hasWarnings: Bool {
+        return diagnostics.contains(where: { $0.message.behavior == .warning })
     }
 }

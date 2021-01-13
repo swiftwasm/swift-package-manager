@@ -166,9 +166,10 @@ extension SwiftPackageTool {
         func run(_ swiftTool: SwiftTool) throws {
             let workspace = try swiftTool.getActiveWorkspace()
             let root = try swiftTool.getWorkspaceRoot()
-            
-            let manifests = workspace.loadRootManifests(
-                packages: root.packages, diagnostics: swiftTool.diagnostics)
+
+            let manifests = try temp_await {
+                workspace.loadRootManifests(packages: root.packages, diagnostics: swiftTool.diagnostics, completion: $0)
+            }
             guard let manifest = manifests.first else { return }
 
             let builder = PackageBuilder(
@@ -233,8 +234,9 @@ extension SwiftPackageTool {
             // Get the root package.
             let workspace = try swiftTool.getActiveWorkspace()
             let root = try swiftTool.getWorkspaceRoot()
-            let manifest = workspace.loadRootManifests(
-                packages: root.packages, diagnostics: swiftTool.diagnostics)[0]
+            let manifest = try temp_await {
+                workspace.loadRootManifests(packages: root.packages, diagnostics: swiftTool.diagnostics, completion: $0)
+            }[0]
 
             let builder = PackageBuilder(
                 manifest: manifest,
@@ -295,7 +297,7 @@ extension SwiftPackageTool {
             // Build the current package.
             //
             // We turn build manifest caching off because we need the build plan.
-            let buildOp = try swiftTool.createBuildOperation(useBuildManifestCaching: false)
+            let buildOp = try swiftTool.createBuildOperation(cacheBuildManifest: false)
             try buildOp.build()
 
             // Dump JSON for the current package.
@@ -341,7 +343,7 @@ extension SwiftPackageTool {
             // Build the current package.
             //
             // We turn build manifest caching off because we need the build plan.
-            let buildOp = try swiftTool.createBuildOperation(useBuildManifestCaching: false)
+            let buildOp = try swiftTool.createBuildOperation(cacheBuildManifest: false)
             try buildOp.build()
 
             try symbolGraphExtract.dumpSymbolGraph(
@@ -360,9 +362,10 @@ extension SwiftPackageTool {
         func run(_ swiftTool: SwiftTool) throws {
             let workspace = try swiftTool.getActiveWorkspace()
             let root = try swiftTool.getWorkspaceRoot()
-            
-            let manifests = workspace.loadRootManifests(
-                packages: root.packages, diagnostics: swiftTool.diagnostics)
+
+            let manifests = try temp_await {
+                workspace.loadRootManifests(packages: root.packages, diagnostics: swiftTool.diagnostics, completion: $0)
+            }
             guard let manifest = manifests.first else { return }
 
             let encoder = JSONEncoder.makeWithDefaults()
