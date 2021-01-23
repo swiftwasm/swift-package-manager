@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright (c) 2020 Apple Inc. and the Swift project authors
+ Copyright (c) 2020-2021 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -13,11 +13,13 @@ import Dispatch
 import struct Foundation.Date
 import class Foundation.JSONDecoder
 import struct Foundation.URL
+
+import PackageCollectionsModel
 import PackageModel
 import SourceControl
 import TSCBasic
 
-private typealias JSONModel = JSONPackageCollectionModel.V1
+private typealias JSONModel = PackageCollectionModel.V1
 
 struct JSONPackageCollectionProvider: PackageCollectionProvider {
     private let configuration: Configuration
@@ -106,6 +108,13 @@ struct JSONPackageCollectionProvider: PackageCollectionProvider {
     }
 
     private func makeCollection(from collection: JSONModel.Collection, source: Model.CollectionSource) -> Result<Model.Collection, Error> {
+        // TODO: Check collection's signature
+        // 1. If signed and signature is
+        //      a. valid: process the collection; set isSigned=true
+        //      b. invalid: includes expired cert, untrusted cert, signature-payload mismatch => return error
+        // 2. If unsigned, process the collection; set isSigned=false.
+        let isSigned = true
+
         var serializationOkay = true
         let packages = collection.packages.map { package -> Model.Package in
             let versions = package.versions.compactMap { version -> Model.Package.Version? in
@@ -168,7 +177,8 @@ struct JSONPackageCollectionProvider: PackageCollectionProvider {
                               packages: packages,
                               createdAt: collection.generatedAt,
                               createdBy: collection.generatedBy.flatMap { Model.Collection.Author(name: $0.name) },
-                              lastProcessedAt: Date()))
+                              lastProcessedAt: Date(),
+                              isSigned: isSigned))
     }
 
     private func makeRequestOptions(validResponseCodes: [Int]) -> HTTPClientRequest.Options {
@@ -215,7 +225,33 @@ struct JSONPackageCollectionProvider: PackageCollectionProvider {
 extension Model.Product {
     fileprivate init(from: JSONModel.Product, packageTargets: [Model.Target]) {
         let targets = packageTargets.filter { from.targets.map { $0.lowercased() }.contains($0.name.lowercased()) }
-        self = .init(name: from.name, type: from.type, targets: targets)
+        self = .init(name: from.name, type: .init(from: from.type), targets: targets)
+    }
+}
+
+extension PackageModel.ProductType {
+    fileprivate init(from: JSONModel.ProductType) {
+        switch from {
+        case .library(let libraryType):
+            self = .library(.init(from: libraryType))
+        case .executable:
+            self = .executable
+        case .test:
+            self = .test
+        }
+    }
+}
+
+extension PackageModel.ProductType.LibraryType {
+    fileprivate init(from: JSONModel.ProductType.LibraryType) {
+        switch from {
+        case .static:
+            self = .static
+        case .dynamic:
+            self = .dynamic
+        case .automatic:
+            self = .automatic
+        }
     }
 }
 
