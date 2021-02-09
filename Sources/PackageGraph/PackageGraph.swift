@@ -87,17 +87,6 @@ public struct PackageGraph {
     public let inputPackages: [ResolvedPackage]
 
     /// Construct a package graph directly.
-    // FIXME: deprecated 12/2020, remove once clients migrate
-    @available(*, deprecated, message: "use throwing variant instead (init(rootPackages:rootDependencies:dependencies:)")
-    public init(
-        rootPackages: [ResolvedPackage],
-        rootDependencies: [ResolvedPackage] = [],
-        requiredDependencies: Set<PackageReference>
-    ) {
-        try! self.init(rootPackages: rootPackages, rootDependencies: rootDependencies, dependencies: requiredDependencies)
-    }
-
-    /// Construct a package graph directly.
     public init(
         rootPackages: [ResolvedPackage],
         rootDependencies: [ResolvedPackage] = [],
@@ -210,7 +199,7 @@ extension PackageGraphError: CustomStringConvertible {
 
             // If the package dependency name is the same as the package name, or if the product name and package name
             // don't correspond, we need to rewrite the target dependency to explicit specify the package name.
-            if packageDependency.name == packageName || productName != packageName {
+            if packageDependency.nameForTargetDependencyResolutionOnly == packageName || productName != packageName {
                 solutionSteps.append("""
                     reference the package in the target dependency with '.product(name: "\(productName)", package: \
                     "\(packageName)")'
@@ -220,7 +209,7 @@ extension PackageGraphError: CustomStringConvertible {
             // If the name of the product and the package are the same, or if the package dependency implicit name
             // deduced from the URL is not correct, we need to rewrite the package dependency declaration to specify the
             // package name.
-            if productName == packageName || packageDependency.name != packageName {
+            if productName == packageName || packageDependency.nameForTargetDependencyResolutionOnly != packageName {
                 let dependencySwiftRepresentation = packageDependency.swiftRepresentation(overridingName: packageName)
                 solutionSteps.append("""
                     provide the name of the package dependency with '\(dependencySwiftRepresentation)'
@@ -240,14 +229,14 @@ fileprivate extension PackageDependencyDescription {
     func swiftRepresentation(overridingName: String? = nil) -> String {
         var parameters: [String] = []
 
-        if let name = overridingName ?? explicitName {
+        if let name = overridingName ?? self.explicitNameForTargetDependencyResolutionOnly {
             parameters.append("name: \"\(name)\"")
         }
 
         if requirement == .localPackage {
-            parameters.append("path: \"\(url)\"")
+            parameters.append("path: \"\(self.location)\"")
         } else {
-            parameters.append("url: \"\(url)\"")
+            parameters.append("url: \"\(self.location)\"")
 
             switch requirement {
             case .branch(let branch):

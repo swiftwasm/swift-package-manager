@@ -154,47 +154,6 @@ public final class ManifestLoader: ManifestLoaderProtocol {
         self.operationQueue.maxConcurrentOperationCount = Concurrency.maxOperations
     }
 
-    // FIXME: deprecated before 12/2020, remove once clients migrate
-    @available(*, deprecated)
-    public convenience init(resources: ManifestResourceProvider, isManifestSandboxEnabled: Bool = true) {
-        self.init(manifestResources: resources, isManifestSandboxEnabled: isManifestSandboxEnabled)
-    }
-
-    // FIXME: deprecated 12/2020, remove once clients migrate
-    @available(*, deprecated, message: "use non-blocking version instead")
-    public static func loadManifest(
-        packagePath: AbsolutePath,
-        swiftCompiler: AbsolutePath,
-        swiftCompilerFlags: [String],
-        packageKind: PackageReference.Kind
-    ) throws -> Manifest {
-        try temp_await{
-            Self.loadManifest(packagePath: packagePath,
-                              swiftCompiler: swiftCompiler,
-                              swiftCompilerFlags: swiftCompilerFlags,
-                              packageKind: packageKind,
-                              on: .global(),
-                              completion: $0)
-        }
-    }
-
-    @available(*, deprecated, message: "use at:kind: version instead")
-    public static func loadManifest(
-        packagePath: AbsolutePath,
-        swiftCompiler: AbsolutePath,
-        swiftCompilerFlags: [String],
-        packageKind: PackageReference.Kind,
-        on queue: DispatchQueue,
-        completion: @escaping (Result<Manifest, Error>) -> Void
-     ) {
-        Self.loadManifest(at: packagePath,
-                          kind: packageKind,
-                          swiftCompiler: swiftCompiler,
-                          swiftCompilerFlags: swiftCompilerFlags,
-                          on: queue,
-                          completion: completion)
-    }
-
     /// Loads a manifest from a package repository using the resources associated with a particular `swiftc` executable.
     ///
     /// - Parameters:
@@ -229,32 +188,6 @@ public final class ManifestLoader: ManifestLoaderProtocol {
             )
         } catch {
             return completion(.failure(error))
-        }
-    }
-
-    // FIXME: deprecated 12/2020, remove once clients migrate
-    @available(*, deprecated, message: "use non-blocking version instead")
-    public func load(
-        packagePath path: AbsolutePath,
-        baseURL: String,
-        version: Version?,
-        revision: String?,
-        toolsVersion: ToolsVersion,
-        packageKind: PackageReference.Kind,
-        fileSystem: FileSystem? = nil,
-        diagnostics: DiagnosticsEngine? = nil
-    ) throws -> Manifest {
-        try temp_await{
-            self.load(at: path,
-                      packageKind: packageKind,
-                      packageLocation: baseURL,
-                      version: version,
-                      revision: revision,
-                      toolsVersion: toolsVersion,
-                      fileSystem: fileSystem ?? localFileSystem,
-                      diagnostics: diagnostics,
-                      on: .global(),
-                      completion: $0)
         }
     }
 
@@ -451,7 +384,7 @@ public final class ManifestLoader: ManifestLoaderProtocol {
         diagnostics: DiagnosticsEngine?
     ) throws {
         let dependenciesByIdentity = Dictionary(grouping: manifest.dependencies, by: { dependency in
-            PackageIdentity(url: dependency.url)
+            PackageIdentity(url: dependency.location)
         })
 
         let duplicateDependencyIdentities = dependenciesByIdentity
@@ -473,7 +406,7 @@ public final class ManifestLoader: ManifestLoaderProtocol {
             let duplicateDependencyNames = manifest.dependencies
                 .lazy
                 .filter({ !duplicateDependencies.contains($0) })
-                .map({ $0.name })
+                .map({ $0.nameForTargetDependencyResolutionOnly })
                 .spm_findDuplicates()
 
             for name in duplicateDependencyNames {
@@ -522,7 +455,7 @@ public final class ManifestLoader: ManifestLoaderProtocol {
                         try diagnostics.emit(.unknownTargetPackageDependency(
                             packageName: packageName ?? "unknown package name",
                             targetName: target.name,
-                            validPackages: manifest.dependencies.map { $0.name }
+                            validPackages: manifest.dependencies.map { $0.nameForTargetDependencyResolutionOnly }
                         ))
                     }
                 case .byName(let name, _):
@@ -534,7 +467,7 @@ public final class ManifestLoader: ManifestLoaderProtocol {
                         try diagnostics.emit(.unknownTargetDependency(
                             dependency: name,
                             targetName: target.name,
-                            validDependencies: manifest.dependencies.map { $0.name }
+                            validDependencies: manifest.dependencies.map { $0.nameForTargetDependencyResolutionOnly }
                         ))
                     }
                 }

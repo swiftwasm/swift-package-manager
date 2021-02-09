@@ -48,16 +48,8 @@ public protocol WorkspaceDelegate: AnyObject {
     /// The workspace has started fetching this repository.
     func fetchingWillBegin(repository: String, fetchDetails: RepositoryManager.FetchDetails?)
 
-    /// The workspace has started fetching this repository.
-    @available(*, deprecated)
-    func fetchingWillBegin(repository: String)
-
     /// The workspace has finished fetching this repository.
     func fetchingDidFinish(repository: String, fetchDetails: RepositoryManager.FetchDetails?, diagnostic: Diagnostic?)
-
-    /// The workspace has finished fetching this repository.
-    @available(*, deprecated)
-    func fetchingDidFinish(repository: String, diagnostic: Diagnostic?)
 
     /// The workspace has started updating this repository.
     func repositoryWillUpdate(_ repository: String)
@@ -127,17 +119,6 @@ public extension WorkspaceDelegate {
 
     func fetchingWillBegin(repository: String) {}
     func fetchingDidFinish(repository: String, diagnostic: Diagnostic?) {}
-
-    @available(*, deprecated)
-    func fetchingWillBegin(repository: String, fetchDetails: RepositoryManager.FetchDetails?) {
-        fetchingWillBegin(repository: repository)
-    }
-
-    @available(*, deprecated)
-    func fetchingDidFinish(repository: String, fetchDetails: RepositoryManager.FetchDetails?, diagnostic: Diagnostic?) {
-        fetchingDidFinish(repository: repository, diagnostic: diagnostic)
-    }
-
 }
 
 private class WorkspaceRepositoryManagerDelegate: RepositoryManagerDelegate {
@@ -651,33 +632,6 @@ extension Workspace {
         return try workspace.loadPackageGraph(rootPath: packagePath, diagnostics: diagnostics)
     }
 
-    /// Fetch and load the complete package at the given path.
-    ///
-    /// This will implicitly cause any dependencies not yet present in the
-    /// working checkouts to be resolved, cloned, and checked out.
-    ///
-    /// - Returns: The loaded package graph.
-    // FIXME: deprecated 12/2020, remove once clients migrate
-    @available(*, deprecated, message: "use throwing variant instead (loadPackageGraph(input:)")
-    @discardableResult
-    public func loadPackageGraph(
-        root: PackageGraphRootInput,
-        explicitProduct: String? = nil,
-        createMultipleTestProducts: Bool = false,
-        createREPLProduct: Bool = false,
-        forceResolvedVersions: Bool = false,
-        diagnostics: DiagnosticsEngine,
-        xcTestMinimumDeploymentTargets: [PackageModel.Platform:PlatformVersion]? = nil
-    ) -> PackageGraph {
-        try! self.loadPackageGraph(rootInput: root,
-                                   explicitProduct: explicitProduct,
-                                   createMultipleTestProducts: createMultipleTestProducts,
-                                   createREPLProduct: createREPLProduct,
-                                   forceResolvedVersions: forceResolvedVersions,
-                                   diagnostics: diagnostics,
-                                   xcTestMinimumDeploymentTargets: xcTestMinimumDeploymentTargets)
-    }
-
     @discardableResult
     public func loadPackageGraph(
         rootInput root: PackageGraphRootInput,
@@ -731,22 +685,6 @@ extension Workspace {
             fileSystem: fileSystem,
             shouldCreateMultipleTestProducts: createMultipleTestProducts,
             createREPLProduct: createREPLProduct
-        )
-    }
-
-
-    // FIXME: deprecated 12/2020, remove once clients migrate
-    @discardableResult
-    @available(*, deprecated, message: "use throwing variant instead (loadPackageGraph(rootPath:)")
-    public func loadPackageGraph(
-        root: AbsolutePath,
-        explicitProduct: String? = nil,
-        diagnostics: DiagnosticsEngine
-    ) -> PackageGraph {
-        try! self.loadPackageGraph(
-            rootInput: PackageGraphRootInput(packages: [root], mirrors: config.mirrors),
-            explicitProduct: explicitProduct,
-            diagnostics: diagnostics
         )
     }
 
@@ -1148,7 +1086,7 @@ extension Workspace {
                 let node = GraphLoadingNode(manifest: manifest, productFilter: .everything)
                 return node
             } + self.root.dependencies.compactMap{ dependency in
-                let url = workspace.config.mirrors.effectiveURL(forURL: dependency.url)
+                let url = workspace.config.mirrors.effectiveURL(forURL: dependency.location)
                 let identity = PackageIdentity(url: url)
                 let package = PackageReference.remote(identity: identity, location: url)
                 inputIdentities.insert(package)
@@ -1161,7 +1099,7 @@ extension Workspace {
             var requiredIdentities: Set<PackageReference> = []
             _ = transitiveClosure(inputNodes) { node in
                 return node.manifest.dependenciesRequired(for: node.productFilter).compactMap{ dependency in
-                    let url = workspace.config.mirrors.effectiveURL(forURL: dependency.url)
+                    let url = workspace.config.mirrors.effectiveURL(forURL: dependency.location)
                     let identity = PackageIdentity(url: url)
                     let package = PackageReference.remote(identity: identity, location: url)
                     requiredIdentities.insert(package)
@@ -1332,7 +1270,7 @@ extension Workspace {
         }
 
         // optimization: preload in parallel
-        let rootDependencyManifestsURLs = root.dependencies.map{ config.mirrors.effectiveURL(forURL: $0.url) }
+        let rootDependencyManifestsURLs = root.dependencies.map{ config.mirrors.effectiveURL(forURL: $0.location) }
         let rootDependencyManifests = try temp_await { self.loadManifests(forURLs: rootDependencyManifestsURLs, diagnostics: diagnostics, completion: $0) }
 
         let inputManifests = root.manifests + rootDependencyManifests
@@ -1346,14 +1284,14 @@ extension Workspace {
         }
 
         // optimization: preload manifest we know about in parallel
-        let inputDependenciesURLs = inputManifests.map { $0.dependencies.map{ config.mirrors.effectiveURL(forURL: $0.url) } }.flatMap { $0 }
+        let inputDependenciesURLs = inputManifests.map { $0.dependencies.map{ config.mirrors.effectiveURL(forURL: $0.location) } }.flatMap { $0 }
         // FIXME: this should not block
         var loadedManifests = try temp_await { self.loadManifests(forURLs: inputDependenciesURLs, diagnostics: diagnostics, completion: $0) }.spm_createDictionary{ ($0.packageLocation, $0) }
 
         // continue to load the rest of the manifest for this graph
         let allManifestsWithPossibleDuplicates = try topologicalSort(inputManifests.map{ KeyedPair($0, key: URLAndFilter(url: $0.packageLocation, productFilter: .everything)) }) { node in
             return node.item.dependenciesRequired(for: node.key.productFilter).compactMap{ dependency in
-                let url = config.mirrors.effectiveURL(forURL: dependency.url)
+                let url = config.mirrors.effectiveURL(forURL: dependency.location)
                 // FIXME: this should not block
                 // note: loadManifest emits diagnostics in case it fails
                 let manifest = loadedManifests[url] ?? temp_await { self.loadManifest(forURL: url, diagnostics: diagnostics, completion: $0) }
