@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright 2015 - 2019 Apple Inc. and the Swift project authors
+ Copyright 2015 - 2021 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -717,7 +717,7 @@ public final class SwiftTargetBuildDescription {
         case .library, .test:
             result.append("-parse-as-library")
 
-        case .executable, .systemModule, .binary:
+        case .executable, .systemModule, .binary, .extension:
             do { }
         }
 
@@ -1607,7 +1607,7 @@ public class BuildPlan {
                     buildParameters: buildParameters,
                     fileSystem: fileSystem,
                     diagnostics: diagnostics))
-            case is SystemLibraryTarget, is BinaryTarget:
+            case is SystemLibraryTarget, is BinaryTarget, is ExtensionTarget:
                  break
             default:
                  fatalError("unhandled \(target.underlyingTarget)")
@@ -1860,6 +1860,8 @@ public class BuildPlan {
                     if let library = xcFrameworkLibrary(for: binaryTarget) {
                         libraryBinaryPaths.insert(library.binaryPath)
                     }
+                case .extension:
+                    continue
                 }
 
             case .product(let product, _):

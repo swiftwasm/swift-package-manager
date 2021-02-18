@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright (c) 2014 - 2017 Apple Inc. and the Swift project authors
+ Copyright (c) 2014 - 2021 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -13,6 +13,7 @@ import TSCBasic
 import TSCUtility
 import PackageModel
 import Foundation
+import SourceControl
 
 enum ManifestJSONParser {
      struct Result {
@@ -141,6 +142,8 @@ enum ManifestJSONParser {
         let providers = try? json
             .getArray("providers")
             .map(SystemPackageProviderDescription.init(v4:))
+        
+        let capability = try? TargetDescription.ExtensionCapability(v4: json.getJSON("extensionCapability"))
 
         let dependencies = try json
             .getArray("dependencies")
@@ -164,6 +167,7 @@ enum ManifestJSONParser {
             type: try .init(v4: json.get("type")),
             pkgConfig: json.get("pkgConfig"),
             providers: providers,
+            extensionCapability: capability,
             settings: try Self.parseBuildSettings(json),
             checksum: json.get("checksum")
         )
@@ -171,10 +175,6 @@ enum ManifestJSONParser {
 
     private static func parseResources(_ json: JSON) throws -> [TargetDescription.Resource] {
         guard let resourcesJSON = try? json.getArray("resources") else { return [] }
-        if resourcesJSON.isEmpty {
-            throw ManifestParseError.runtimeManifestErrors(["resources cannot be an empty array; provide at least one value or remove it"])
-        }
-
         return try resourcesJSON.map { json in
             let rawRule = try json.get(String.self, forKey: "rule")
             let rule = TargetDescription.Resource.Rule(rawValue: rawRule)!
@@ -362,13 +362,21 @@ extension PackageDependencyDescription {
             self = .local(identity: identity,
                           name: name,
                           path: path,
-                           productFilter: .everything)
+                          productFilter: .everything)
         // a package in a git location, may be a remote URL or on disk
         // TODO: consider refining the behavior + validation when the package is on disk
         // TODO: refactor this when adding registry support
         default:
             // location mapping (aka mirrors)
             let location = identityResolver.resolveLocation(from: location)
+            
+            if let validPath = try? AbsolutePath(validating: location), fileSystem.exists(validPath) {
+                let gitRepoProvider = GitRepositoryProvider()
+                guard gitRepoProvider.isValidDirectory(location) else {
+                    throw StringError("Cannot clone from local directory \(location)\nPlease git init or use \"path:\" for \(location)")
+                }
+            }
+            
             // in the future this will check with the registries for the identity of the URL
             let identity = identityResolver.resolveIdentity(for: location)
             let requirement = try Requirement(v4: requirementJSON)
@@ -394,6 +402,8 @@ extension TargetDescription.TargetType {
             self = .system
         case "binary":
             self = .binary
+        case "extension":
+            self = .extension
         default:
             throw InternalError("invalid target \(string)")
         }
@@ -416,6 +426,22 @@ extension TargetDescription.Dependency {
         case "byname":
             self = try .byName(name: json.get("name"), condition: condition)
 
+        default:
+            throw InternalError("invalid type \(type)")
+        }
+    }
+}
+
+extension TargetDescription.ExtensionCapability {
+    fileprivate init(v4 json: JSON) throws {
+        let type = try json.get(String.self, forKey: "type")
+        switch type {
+        case "prebuild":
+            self = .prebuild
+        case "buildTool":
+            self = .buildTool
+        case "postbuild":
+            self = .postbuild
         default:
             throw InternalError("invalid type \(type)")
         }
