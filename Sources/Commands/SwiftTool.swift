@@ -745,22 +745,6 @@ public class SwiftTool {
         }
         if let sdk = self.options.customCompileSDK {
             destination.sdk = sdk
-        } else if let target = destination.target, target.isWASI() {
-            // Set default SDK path when target is WASI whose SDK is embeded
-            // in Swift toolchain
-            do {
-                let compilers = try UserToolchain.determineSwiftCompilers(binDir: destination.binDir)
-                let wasiSysroot = compilers.compile
-                    .parentDirectory // bin
-                    .parentDirectory // usr
-                    .appending(components: "share", "wasi-sysroot")
-                destination = Destination(
-                    target: target, sdk: wasiSysroot, binDir: destination.binDir,
-                    extraCCFlags: [], extraSwiftCFlags: [], extraCPPFlags: []
-                )
-            } catch {
-                return .failure(error)
-            }
         }
         destination.archs = options.archs
 
@@ -769,6 +753,10 @@ public class SwiftTool {
             return self._hostToolchain
         }
 
+        // These flags are for host platforms, so clear them
+        destination.extraCCFlags = []
+        destination.extraSwiftCFlags = []
+        destination.extraCPPFlags = []
         return Result(catching: { try UserToolchain(destination: destination, searchPaths: searchPaths) })
     }()
 
