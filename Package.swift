@@ -101,6 +101,16 @@ let package = Package(
             name: "PackageCollectionsModel",
             targets: ["PackageCollectionsModel"]
         ),
+
+        .library(
+            name: "SwiftPMPackageCollections",
+            targets: [
+                "PackageCollections",
+                "PackageCollectionsModel",
+                "PackageCollectionsSigning",
+                "PackageModel",
+            ]
+        ),
     ],
     targets: [
         // The `PackageDescription` targets define the API which is available to
@@ -170,7 +180,7 @@ let package = Package(
         .target(
             /** Data structures and support for package collections */
             name: "PackageCollections",
-            dependencies: ["SwiftToolsSupport-auto", "Basics", "PackageModel", "SourceControl", "PackageCollectionsModel"]),
+            dependencies: ["SwiftToolsSupport-auto", "Basics", "PackageModel", "SourceControl", "PackageCollectionsModel", "PackageCollectionsSigning"]),
 
         // MARK: Package Manager Functionality
 
