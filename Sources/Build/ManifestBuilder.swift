@@ -580,8 +580,8 @@ extension LLBuildManifestBuilder {
                     // Establish a dependency on binary of the product.
                     inputs.append(file: planProduct.binary)
 
-                // For automatic and static libraries, add their targets as static input.
-                case .library(.automatic), .library(.static):
+                // For automatic and static libraries, and extensions, add their targets as static input.
+                case .library(.automatic), .library(.static), .extension:
                     for target in product.targets {
                         try addStaticTargetInputs(target)
                     }
@@ -603,9 +603,10 @@ extension LLBuildManifestBuilder {
 
         // Add any build tool commands created by extensions for the target (prebuild and postbuild commands are handled outside the build).
         for command in target.extensionEvaluationResults.reduce([], { $0 + $1.commands }) {
-            if case .buildToolCommand(let displayName, let execPath, let arguments, _, _, let inputPaths, let outputPaths, _) = command {
+            if case .buildToolCommand(let displayName, let executable, let arguments, _, _, let inputPaths, let outputPaths, _) = command {
                 // Create a shell command to invoke the executable.  We include the path of the executable as a dependency.
                 // FIXME: We will need to extend the addShellCmd() function to also take working directory and environment.
+                let execPath = AbsolutePath(executable, relativeTo: buildParameters.buildPath)
                 manifest.addShellCmd(
                     name: displayName,
                     description: displayName,
@@ -699,7 +700,7 @@ extension LLBuildManifestBuilder {
                     let binary = planProduct.binary
                     inputs.append(file: binary)
 
-                case .library(.automatic), .library(.static):
+                case .library(.automatic), .library(.static), .extension:
                     for target in product.targets {
                         addStaticTargetInputs(target)
                     }
@@ -907,6 +908,8 @@ extension ResolvedProduct {
             throw InternalError("automatic library not supported")
         case .executable:
             return "\(name)-\(config).exe"
+        case .extension:
+            throw InternalError("unexpectedly asked for the llbuild target name of an extension product")
         }
     }
 
