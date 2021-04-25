@@ -73,6 +73,11 @@ private class MockRepository: Repository {
         // This is used for reading the tools version.
         return self.fs
     }
+
+    public func openFileView(tag: String) throws -> FileSystem {
+        let revision = try self.resolveRevision(tag: tag)
+        return try self.openFileView(revision: revision)
+    }
 }
 
 private class MockRepositories: RepositoryProvider {
@@ -106,7 +111,7 @@ private class MockRepositories: RepositoryProvider {
         // No-op.
     }
 
-    func checkoutExists(at path: AbsolutePath) throws -> Bool {
+    func workingCopyExists(at path: AbsolutePath) throws -> Bool {
         return false
     }
 
@@ -114,11 +119,11 @@ private class MockRepositories: RepositoryProvider {
         return self.repositories[repository.url]!
     }
 
-    func cloneCheckout(repository: RepositorySpecifier, at sourcePath: AbsolutePath, to destinationPath: AbsolutePath, editable: Bool) throws {
+    func createWorkingCopy(repository: RepositorySpecifier, sourcePath: AbsolutePath, at destinationPath: AbsolutePath, editable: Bool) throws -> WorkingCheckout {
         fatalError("unexpected API call")
     }
 
-    func openCheckout(at path: AbsolutePath) throws -> WorkingCheckout {
+    func openWorkingCopy(at path: AbsolutePath) throws -> WorkingCheckout {
         fatalError("unexpected API call")
     }
 }
@@ -387,10 +392,10 @@ class RepositoryPackageContainerProviderTests: XCTestCase {
             "Bar2": .specific(["B2", "Bar1", "Bar3"]),
             "Bar3": .specific(["Bar1", "Bar3"]),
         ]
-        let v5Constraints = dependencies.map {
+        let v5Constraints = try dependencies.map {
             PackageContainerConstraint(
                 package: $0.createPackageRef(),
-                requirement: $0.toConstraintRequirement(),
+                requirement: try $0.toConstraintRequirement(),
                 products: v5ProductMapping[$0.nameForTargetDependencyResolutionOnly]!
             )
         }
@@ -399,10 +404,10 @@ class RepositoryPackageContainerProviderTests: XCTestCase {
             "Bar2": .specific(["B2"]),
             "Bar3": .specific(["Bar3"]),
         ]
-        let v5_2Constraints = dependencies.map {
+        let v5_2Constraints = try dependencies.map {
             PackageContainerConstraint(
                 package: $0.createPackageRef(),
-                requirement: $0.toConstraintRequirement(),
+                requirement: try $0.toConstraintRequirement(),
                 products: v5_2ProductMapping[$0.nameForTargetDependencyResolutionOnly]!
             )
         }
@@ -420,7 +425,7 @@ class RepositoryPackageContainerProviderTests: XCTestCase {
             )
 
             XCTAssertEqual(
-                manifest
+                try manifest
                     .dependencyConstraints(productFilter: .everything)
                     .sorted(by: { $0.package.identity < $1.package.identity }),
                 [
@@ -444,7 +449,7 @@ class RepositoryPackageContainerProviderTests: XCTestCase {
             )
 
             XCTAssertEqual(
-                manifest
+                try manifest
                     .dependencyConstraints(productFilter: .everything)
                     .sorted(by: { $0.package.identity < $1.package.identity }),
                 [
@@ -468,7 +473,7 @@ class RepositoryPackageContainerProviderTests: XCTestCase {
             )
 
             XCTAssertEqual(
-                manifest
+                try manifest
                     .dependencyConstraints(productFilter: .everything)
                     .sorted(by: { $0.package.identity < $1.package.identity }),
                 [
@@ -492,7 +497,7 @@ class RepositoryPackageContainerProviderTests: XCTestCase {
             )
 
             XCTAssertEqual(
-                manifest
+                try manifest
                     .dependencyConstraints(productFilter: .specific(Set(products.map { $0.name })))
                     .sorted(by: { $0.package.identity < $1.package.identity }),
                 [

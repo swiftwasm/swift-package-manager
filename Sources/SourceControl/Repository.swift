@@ -70,7 +70,7 @@ public protocol RepositoryProvider {
     ///
     /// - Parameters:
     ///   - repository: The specifier of the repository to fetch.
-    ///   - path: The destiantion path for the fetch.
+    ///   - path: The destination path for the fetch.
     /// - Throws: If there is any error fetching the repository.
     func fetch(repository: RepositorySpecifier, to path: AbsolutePath) throws
 
@@ -85,9 +85,9 @@ public protocol RepositoryProvider {
     /// - Throws: If the repository is unable to be opened.
     func open(repository: RepositorySpecifier, at path: AbsolutePath) throws -> Repository
 
-    /// Clone a managed repository into a working copy at on the local file system.
+    /// Create a working copy from a managed repository.
     ///
-    /// Once complete, the repository can be opened using `openCheckout`. Note
+    /// Once complete, the repository can be opened using `openWorkingCopy`. Note
     /// that there is no requirement that the files have been materialized into
     /// the file system at the completion of this call, since it will always be
     /// followed by checking out the cloned working copy at a particular ref.
@@ -102,21 +102,21 @@ public protocol RepositoryProvider {
     ///   - editable: The checkout is expected to be edited by users.
     ///
     /// - Throws: If there is any error cloning the repository.
-    func cloneCheckout(
+    func createWorkingCopy(
         repository: RepositorySpecifier,
-        at sourcePath: AbsolutePath,
-        to destinationPath: AbsolutePath,
-        editable: Bool) throws
+        sourcePath: AbsolutePath,
+        at destinationPath: AbsolutePath,
+        editable: Bool) throws -> WorkingCheckout
 
     /// Returns true if a working repository exists at `path`
-    func checkoutExists(at path: AbsolutePath) throws -> Bool
+    func workingCopyExists(at path: AbsolutePath) throws -> Bool
 
     /// Open a working repository copy.
     ///
     /// - Parameters:
     ///   - path: The location of the repository on disk, at which the repository
-    ///     has previously been created via `cloneCheckout`.
-    func openCheckout(at path: AbsolutePath) throws -> WorkingCheckout
+    ///     has previously been created via `copyToWorkingDirectory`.
+    func openWorkingCopy(at path: AbsolutePath) throws -> WorkingCheckout
 
     /// Copies the repository at path `from` to path `to`.
     /// - Parameters:
@@ -181,8 +181,24 @@ public protocol Repository {
     /// It is expected behavior that attempts to mutate the given FileSystem
     /// will fail or crash.
     ///
-    /// - Throws: If a error occurs accessing the revision.
+    /// - Throws: If an error occurs accessing the revision.
     func openFileView(revision: Revision) throws -> FileSystem
+
+    /// Open an immutable file system view for a particular tag.
+    ///
+    /// This view exposes the contents of the repository at the given revision
+    /// as a file system rooted inside the repository. The repository must
+    /// support opening multiple views concurrently, but the expectation is that
+    /// clients should be prepared for this to be inefficient when performing
+    /// interleaved accesses across separate views (i.e., the repository may
+    /// back the view by an actual file system representation of the
+    /// repository).
+    ///
+    /// It is expected behavior that attempts to mutate the given FileSystem
+    /// will fail or crash.
+    ///
+    /// - Throws: If an error occurs accessing the revision.
+    func openFileView(tag: String) throws -> FileSystem
 }
 
 /// An editable checkout of a repository (i.e. a working copy) on the local file

@@ -171,11 +171,18 @@ let package = Package(
             /** Package collections models */
             name: "PackageCollectionsModel",
             dependencies: []),
-        
+
+        .target(
+            /** Package collections signing C lib */
+            name: "PackageCollectionsSigningLibc",
+            dependencies: ["Crypto"],
+            cSettings: [
+                .define("WIN32_LEAN_AND_MEAN"),
+            ]),
         .target(
              /** Package collections signing */
              name: "PackageCollectionsSigning",
-             dependencies: ["PackageCollectionsModel", "Crypto", "Basics"]),
+             dependencies: ["PackageCollectionsModel", "PackageCollectionsSigningLibc", "Crypto", "Basics"]),
 
         .target(
             /** Data structures and support for package collections */
@@ -215,7 +222,7 @@ let package = Package(
         .target(
             /** The main executable provided by SwiftPM */
             name: "swift-package",
-            dependencies: ["Commands"]),
+            dependencies: ["Commands", "SwiftToolsSupport-auto"]),
         .target(
             /** Builds packages */
             name: "swift-build",
@@ -245,7 +252,7 @@ let package = Package(
         .target(
             /** SwiftPM test support library */
             name: "SPMTestSupport",
-            dependencies: ["SwiftToolsSupport-auto", "Basics", "TSCTestSupport", "PackageGraph", "PackageLoading", "SourceControl", "Workspace", "Xcodeproj", "XCBuildSupport"]),
+            dependencies: ["SwiftToolsSupport-auto", "Basics", "Build", "TSCTestSupport", "PackageGraph", "PackageLoading", "SourceControl", "Workspace", "Xcodeproj", "XCBuildSupport"]),
 
         // MARK: SwiftPM tests
 

@@ -27,7 +27,7 @@ private typealias JSONModel = PackageCollectionModel.V1
 struct JSONPackageCollectionProvider: PackageCollectionProvider {
     // TODO: This can be removed when the `Security` framework APIs that the `PackageCollectionsSigning`
     // module depends on are available on all Apple platforms.
-    #if os(macOS) || os(Linux) || os(Windows)
+    #if os(macOS) || os(Linux) || os(Windows) || os(Android)
     static let isSignatureCheckSupported = true
     #else
     static let isSignatureCheckSupported = false
@@ -55,7 +55,7 @@ struct JSONPackageCollectionProvider: PackageCollectionProvider {
         self.signatureValidator = signatureValidator ?? PackageCollectionSigning(
             trustedRootCertsDir: configuration.trustedRootCertsDir ?? fileSystem.dotSwiftPM.appending(components: "config", "trust-root-certs").asURL,
             additionalTrustedRootCerts: sourceCertPolicy.allRootCerts,
-            callbackQueue: DispatchQueue.global(),
+            callbackQueue: .sharedConcurrent,
             diagnosticsEngine: diagnosticsEngine
         )
         self.sourceCertPolicy = sourceCertPolicy
@@ -87,34 +87,46 @@ struct JSONPackageCollectionProvider: PackageCollectionProvider {
         let headers = self.makeRequestHeaders()
         self.httpClient.head(source.url, headers: headers, options: headOptions) { result in
             switch result {
+            case .failure(HTTPClientError.badResponseStatusCode(let statusCode)):
+                if statusCode == 404 {
+                    return callback(.failure(Errors.collectionNotFound(source.url)))
+                } else {
+                    return callback(.failure(Errors.collectionUnavailable(source.url, statusCode)))
+                }
             case .failure(let error):
-                callback(.failure(error))
+                return callback(.failure(error))
             case .success(let response):
                 guard let contentLength = response.headers.get("Content-Length").first.flatMap(Int64.init) else {
-                    return callback(.failure(Errors.invalidResponse("Missing Content-Length header")))
+                    return callback(.failure(Errors.invalidResponse(source.url, "Missing Content-Length header")))
                 }
                 guard contentLength <= self.configuration.maximumSizeInBytes else {
-                    return callback(.failure(HTTPClientError.responseTooLarge(contentLength)))
+                    return callback(.failure(Errors.responseTooLarge(source.url, contentLength)))
                 }
                 // next do a get request to get the actual content
                 var getOptions = self.makeRequestOptions(validResponseCodes: [200])
                 getOptions.maximumResponseSizeInBytes = self.configuration.maximumSizeInBytes
                 self.httpClient.get(source.url, headers: headers, options: getOptions) { result in
                     switch result {
+                    case .failure(HTTPClientError.badResponseStatusCode(let statusCode)):
+                        if statusCode == 404 {
+                            return callback(.failure(Errors.collectionNotFound(source.url)))
+                        } else {
+                            return callback(.failure(Errors.collectionUnavailable(source.url, statusCode)))
+                        }
                     case .failure(let error):
-                        callback(.failure(error))
+                        return callback(.failure(error))
                     case .success(let response):
                         // check content length again so we can record this as a bad actor
                         // if not returning head and exceeding size
                         // TODO: store bad actors to prevent server DoS
                         guard let contentLength = response.headers.get("Content-Length").first.flatMap(Int64.init) else {
-                            return callback(.failure(Errors.invalidResponse("Missing Content-Length header")))
+                            return callback(.failure(Errors.invalidResponse(source.url, "Missing Content-Length header")))
                         }
                         guard contentLength < self.configuration.maximumSizeInBytes else {
-                            return callback(.failure(HTTPClientError.responseTooLarge(contentLength)))
+                            return callback(.failure(Errors.responseTooLarge(source.url, contentLength)))
                         }
                         guard let body = response.body else {
-                            return callback(.failure(Errors.invalidResponse("Body is empty")))
+                            return callback(.failure(Errors.invalidResponse(source.url, "Body is empty")))
                         }
 
                         let certPolicyKey = self.sourceCertPolicy.certificatePolicyKey(for: source) ?? .default
@@ -163,7 +175,7 @@ struct JSONPackageCollectionProvider: PackageCollectionProvider {
             }
             // Collection is unsigned
             guard let collection = try? self.decoder.decode(JSONModel.Collection.self, from: data) else {
-                return callback(.failure(Errors.invalidJSON(error)))
+                return callback(.failure(Errors.invalidJSON(source.url)))
             }
             callback(self.makeCollection(from: collection, source: source, signature: nil))
         }
@@ -224,6 +236,7 @@ struct JSONPackageCollectionProvider: PackageCollectionProvider {
                 let license = version.license.flatMap { Model.License(from: $0) }
 
                 return .init(version: parsedVersion,
+                             title: nil,
                              summary: version.summary,
                              manifests: manifests,
                              defaultToolsVersion: defaultToolsVersion,
@@ -242,7 +255,8 @@ struct JSONPackageCollectionProvider: PackageCollectionProvider {
                          watchersCount: nil,
                          readmeURL: package.readmeURL,
                          license: package.license.flatMap { Model.License(from: $0) },
-                         authors: nil)
+                         authors: nil,
+                         languages: nil)
         }
 
         if !serializationOkay {
@@ -277,7 +291,7 @@ struct JSONPackageCollectionProvider: PackageCollectionProvider {
     private static func makeDefaultHTTPClient(diagnosticsEngine: DiagnosticsEngine?) -> HTTPClient {
         var client = HTTPClient(diagnosticsEngine: diagnosticsEngine)
         // TODO: make these defaults configurable?
-        client.configuration.requestTimeout = .seconds(1)
+        client.configuration.requestTimeout = .seconds(5)
         client.configuration.retryStrategy = .exponentialBackoff(maxAttempts: 3, baseDelay: .milliseconds(50))
         client.configuration.circuitBreakerStrategy = .hostErrors(maxErrors: 50, age: .seconds(30))
         return client
@@ -332,9 +346,27 @@ struct JSONPackageCollectionProvider: PackageCollectionProvider {
         }
     }
 
-    public enum Errors: Error {
-        case invalidJSON(Error)
-        case invalidResponse(String)
+    public enum Errors: Error, Equatable, CustomStringConvertible {
+        case invalidJSON(URL)
+        case invalidResponse(URL, String)
+        case responseTooLarge(URL, Int64)
+        case collectionNotFound(URL)
+        case collectionUnavailable(URL, Int)
+
+        public var description: String {
+            switch self {
+            case .invalidJSON(let url):
+                return "The package collection at \(url.absoluteString) contains invalid JSON."
+            case .invalidResponse(let url, let message):
+                return "Received invalid response for package collection at \(url.absoluteString): \(message)"
+            case .responseTooLarge(let url, _):
+                return "The package collection at \(url.absoluteString) is too large."
+            case .collectionNotFound(let url):
+                return "No package collection found at \(url.absoluteString). Please make sure the URL is correct."
+            case .collectionUnavailable(let url, _):
+                return "The package collection at \(url.absoluteString) is unavailable. Please make sure the URL is correct or try again later."
+            }
+        }
     }
 }
 

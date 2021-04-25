@@ -15,7 +15,7 @@ import TSCBasic
 // TODO: is there a better name? this conflicts with the module name which is okay in this case but not ideal in Swift
 public struct PackageCollections: PackageCollectionsProtocol {
     // Check JSONPackageCollectionProvider.isSignatureCheckSupported before updating or removing this
-    #if os(macOS) || os(Linux) || os(Windows)
+    #if os(macOS) || os(Linux) || os(Windows) || os(Android)
     static let isSupportedPlatform = true
     #else
     static let isSupportedPlatform = false
@@ -113,9 +113,9 @@ public struct PackageCollections: PackageCollectionsProtocol {
                             self.refreshCollectionFromSource(source: source, trustConfirmationProvider: nil) { refreshResult in
                                 let count = refreshResults.append(refreshResult)
                                 if count == missingSources.count {
-                                    collections += refreshResults.compactMap { $0.success } // best-effort; not returning errors
-                                    collections.sort(by: sort)
-                                    callback(.success(collections))
+                                    var result = collections + refreshResults.compactMap { $0.success } // best-effort; not returning errors
+                                    result.sort(by: sort)
+                                    callback(.success(result))
                                 }
                             }
                         }
@@ -262,13 +262,13 @@ public struct PackageCollections: PackageCollectionsProtocol {
             return callback(.failure(PackageCollectionError.unsupportedPlatform))
         }
 
-        if let errors = source.validate()?.errors() {
-            return callback(.failure(MultipleErrors(errors)))
-        }
-
         self.storage.collections.get(identifier: .init(from: source)) { result in
             switch result {
             case .failure:
+                // The collection is not in storage. Validate the source before fetching it.
+                if let errors = source.validate()?.errors() {
+                    return callback(.failure(MultipleErrors(errors)))
+                }
                 guard let provider = self.collectionProviders[source.type] else {
                     return callback(.failure(UnknownProvider(source.type)))
                 }
@@ -306,12 +306,18 @@ public struct PackageCollections: PackageCollectionsProtocol {
 
     public func getPackageMetadata(_ reference: PackageReference,
                                    callback: @escaping (Result<PackageCollectionsModel.PackageMetadata, Error>) -> Void) {
+        self.getPackageMetadata(reference, collections: nil, callback: callback)
+    }
+
+    public func getPackageMetadata(_ reference: PackageReference,
+                                   collections: Set<PackageCollectionsModel.CollectionIdentifier>?,
+                                   callback: @escaping (Result<PackageCollectionsModel.PackageMetadata, Error>) -> Void) {
         guard Self.isSupportedPlatform else {
             return callback(.failure(PackageCollectionError.unsupportedPlatform))
         }
 
         // first find in storage
-        self.findPackage(identifier: reference.identity) { result in
+        self.findPackage(identifier: reference.identity, collections: collections) { result in
             switch result {
             case .failure(let error):
                 callback(.failure(error))
@@ -399,7 +405,7 @@ public struct PackageCollections: PackageCollectionsProtocol {
             switch result {
             case .failure(let error):
                 callback(.failure(error))
-            case .success(var collection):
+            case .success(let collection):
                 // If collection is signed and signature is valid, save to storage. `provider.get`
                 // would have failed if signature were invalid.
                 if collection.isSigned {
@@ -436,6 +442,7 @@ public struct PackageCollections: PackageCollectionsProtocol {
                             callback(.failure(error))
                         case .success:
                             if userTrusted {
+                                var collection = collection
                                 collection.source = source
                                 self.storage.collections.put(collection: collection, callback: callback)
                             } else {
@@ -452,17 +459,21 @@ public struct PackageCollections: PackageCollectionsProtocol {
     }
 
     func findPackage(identifier: PackageIdentity,
+                     collections: Set<PackageCollectionsModel.CollectionIdentifier>?,
                      callback: @escaping (Result<PackageCollectionsModel.PackageSearchResult.Item, Error>) -> Void) {
         self.storage.sources.list { result in
             switch result {
             case .failure(let error):
                 callback(.failure(error))
             case .success(let sources):
-                let identifiers = sources.map { Model.CollectionIdentifier(from: $0) }
-                if identifiers.isEmpty {
+                var collectionIdentifiers = sources.map { Model.CollectionIdentifier(from: $0) }
+                if let collections = collections {
+                    collectionIdentifiers = collectionIdentifiers.filter { collections.contains($0) }
+                }
+                if collectionIdentifiers.isEmpty {
                     return callback(.failure(NotFoundError("\(identifier)")))
                 }
-                self.storage.collections.findPackage(identifier: identifier, collectionIdentifiers: identifiers, callback: callback)
+                self.storage.collections.findPackage(identifier: identifier, collectionIdentifiers: collectionIdentifiers, callback: callback)
             }
         }
     }
@@ -521,6 +532,7 @@ public struct PackageCollections: PackageCollectionsProtocol {
         var versions = package.versions.map { packageVersion -> Model.Package.Version in
             let versionMetadata = basicVersionMetadata[packageVersion.version]
             return .init(version: packageVersion.version,
+                         title: versionMetadata?.title ?? packageVersion.title,
                          summary: versionMetadata?.summary ?? packageVersion.summary,
                          manifests: packageVersion.manifests,
                          defaultToolsVersion: packageVersion.defaultToolsVersion,
@@ -538,7 +550,8 @@ public struct PackageCollections: PackageCollectionsProtocol {
             watchersCount: basicMetadata?.watchersCount,
             readmeURL: basicMetadata?.readmeURL ?? package.readmeURL,
             license: basicMetadata?.license ?? package.license,
-            authors: basicMetadata?.authors
+            authors: basicMetadata?.authors ?? package.authors,
+            languages: basicMetadata?.languages ?? package.languages
         )
     }
 }

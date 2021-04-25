@@ -54,14 +54,18 @@ final class TestDiscoveryCommand: CustomLLBuildCommand {
     ) throws {
         let stream = try LocalFileOutputByteStream(path)
 
+        let testsByClassNames = Dictionary(grouping: tests, by: { $0.name }).sorted(by: { $0.key < $1.key })
+
         stream <<< "import XCTest" <<< "\n"
         stream <<< "@testable import " <<< module <<< "\n"
 
-        for klass in tests {
+        for iterator in testsByClassNames {
+            let className = iterator.key
+            let testMethods = iterator.value.flatMap{ $0.methods }
             stream <<< "\n"
-            stream <<< "fileprivate extension " <<< klass.name <<< " {" <<< "\n"
-            stream <<< indent(4) <<< "static let __allTests__\(klass.name) = [" <<< "\n"
-            for method in klass.methods {
+            stream <<< "fileprivate extension " <<< className <<< " {" <<< "\n"
+            stream <<< indent(4) <<< "static let __allTests__\(className) = [" <<< "\n"
+            for method in testMethods {
                 let method = method.hasSuffix("()") ? String(method.dropLast(2)) : method
                 stream <<< indent(8) <<< "(\"\(method)\", \(method))," <<< "\n"
             }
@@ -74,8 +78,9 @@ final class TestDiscoveryCommand: CustomLLBuildCommand {
             return [\n
         """
 
-        for klass in tests {
-            stream <<< indent(8) <<< "testCase(\(klass.name).__allTests__\(klass.name)),\n"
+        for iterator in testsByClassNames {
+            let className = iterator.key
+            stream <<< indent(8) <<< "testCase(\(className).__allTests__\(className)),\n"
         }
 
         stream <<< """
@@ -215,13 +220,8 @@ public struct BuildDescription: Codable {
         self.testDiscoveryCommands = testDiscoveryCommands
         self.copyCommands = copyCommands
 
-        self.builtTestProducts = try plan.buildProducts.filter{ $0.product.type == .test }.map { desc in
-            // FIXME(perf): Provide faster lookups.
-            guard let package = (plan.graph.packages.first{ $0.products.contains(desc.product) }) else {
-                throw InternalError("package with product \(desc.product) not found")
-            }
+        self.builtTestProducts = plan.buildProducts.filter{ $0.product.type == .test }.map { desc in
             return BuiltTestProduct(
-                packageName: package.name,
                 productName: desc.product.name,
                 binaryPath: desc.binary
             )
@@ -609,13 +609,15 @@ final class BuildOperationBuildSystemDelegateHandler: LLBuildBuildSystemDelegate
     }
 
     func buildComplete(success: Bool) {
-        if success {
-            self.progressAnimation.update(
-                step: taskTracker.finishedCount,
-                total: taskTracker.totalCount,
-                text: "Build complete!")
+        queue.sync {
+            if success {
+                self.progressAnimation.update(
+                    step: self.taskTracker.finishedCount,
+                    total: self.taskTracker.totalCount,
+                    text: "Build complete!")
+            }
+            self.progressAnimation.complete(success: success)
         }
-        self.progressAnimation.complete(success: success)
     }
 
     // MARK: Private

@@ -16,6 +16,7 @@ import PackageGraph
 import PackageLoading
 import Foundation
 import SPMBuildCore
+@_implementationOnly import SwiftDriver
 
 extension AbsolutePath {
   fileprivate var asSwiftStringLiteralConstant: String {
@@ -528,7 +529,7 @@ public final class SwiftTargetBuildDescription {
     /// The path to the swiftmodule file after compilation.
     var moduleOutputPath: AbsolutePath {
         // If we're an executable and we're not allowing test targets to link against us, we hide the module.
-        let allowLinkingAgainstExecutables = (buildParameters.triple.isDarwin() || buildParameters.triple.isLinux()) && toolsVersion >= .vNext
+        let allowLinkingAgainstExecutables = (buildParameters.triple.isDarwin() || buildParameters.triple.isLinux()) && toolsVersion >= .v5_5
         let dirPath = (target.type == .executable && !allowLinkingAgainstExecutables) ? tempsPath : buildParameters.buildPath
         return dirPath.appending(component: target.c99name + ".swiftmodule")
     }
@@ -579,6 +580,27 @@ public final class SwiftTargetBuildDescription {
 
     /// True if this is the test discovery target.
     public let testDiscoveryTarget: Bool
+    
+    /// True if this module needs to be parsed as a library based on the target type and the configuration
+    /// of the source code (for example because it has a single source file whose name isn't "main.swift").
+    /// This deactivates heuristics in the Swift compiler that treats single-file modules and source files
+    /// named "main.swift" specially w.r.t. whether they can have an entry point.
+    ///
+    /// See https://bugs.swift.org/browse/SR-14488 for discussion about improvements so that SwiftPM can
+    /// convey the intent to build an executable module to the compiler regardless of the number of files
+    /// in the module or their names.
+    var needsToBeParsedAsLibrary: Bool {
+        switch target.type {
+        case .library, .test:
+            return true
+        case .executable:
+            guard toolsVersion >= .v5_5 else { return false }
+            let sources = self.sources
+            return sources.count == 1 && sources.first?.basename != "main.swift"
+        default:
+            return false
+        }
+    }
 
     /// The filesystem to operate on.
     let fs: FileSystem
@@ -617,10 +639,10 @@ public final class SwiftTargetBuildDescription {
         self.pluginInvocationResults = pluginInvocationResults
         self.prebuildCommandResults = prebuildCommandResults
 
-        // Add any derived source files that were declared in any plugin invocations.
-        for pluginResult in pluginInvocationResults {
+        // Add any derived source files that were declared for any commands from plugin invocations.
+        for command in pluginInvocationResults.reduce([], { $0 + $1.buildCommands }) {
             // TODO: What should we do if we find non-Swift sources here?
-            for absPath in pluginResult.derivedSourceFiles {
+            for absPath in command.outputFiles {
                 let relPath = absPath.relative(to: self.pluginDerivedSources.root)
                 self.pluginDerivedSources.relativePaths.append(relPath)
             }
@@ -689,7 +711,17 @@ public final class SwiftTargetBuildDescription {
         let path = derivedSources.root.appending(subpath)
         try fs.writeIfChanged(path: path, bytes: stream.bytes)
     }
-
+    
+    public static func checkSupportedFrontendFlags(flags: Set<String>, fs: FileSystem) -> Bool {
+        do {
+            let executor = try SPMSwiftDriverExecutor(resolver: ArgsResolver(fileSystem: fs), fileSystem: fs, env: [:])
+            let driver = try Driver(args: ["swiftc"], executor: executor)
+            return driver.supportedFrontendFlags.intersection(flags) == flags
+        } catch {
+            return false
+        }
+    }
+    
     /// The arguments needed to compile this target.
     public func compileArguments() -> [String] {
         var args = [String]()
@@ -727,13 +759,17 @@ public final class SwiftTargetBuildDescription {
         // when we link the executable, we will ask the linker to rename the entry point
         // symbol to just `_main` again (or if the linker doesn't support it, we'll
         // generate a source containing a redirect).
-        if target.type == .executable && !isTestTarget && toolsVersion >= .vNext {
+        if target.type == .executable && !isTestTarget && toolsVersion >= .v5_5 {
             // We only do this if the linker supports it, as indicated by whether we
             // can construct the linker flags. In the future we will use a generated
             // code stub for the cases in which the linker doesn't support it, so that
             // we can rename the symbol unconditionally.
-            if buildParameters.linkerFlagsForRenamingMainFunction(of: target) != nil {
-                args += ["-Xfrontend", "-entry-point-function-name", "-Xfrontend", "\(target.c99name)_main"]
+            // No `-` for these flags because the set of Strings in driver.supportedFrontendFlags do
+            // not have a leading `-`
+            if SwiftTargetBuildDescription.checkSupportedFrontendFlags(flags: ["entry-point-function-name"], fs: self.fs) {
+                if buildParameters.linkerFlagsForRenamingMainFunction(of: target) != nil {
+                    args += ["-Xfrontend", "-entry-point-function-name", "-Xfrontend", "\(target.c99name)_main"]
+                }
             }
         }
 
@@ -788,12 +824,8 @@ public final class SwiftTargetBuildDescription {
         // FIXME: Eliminate side effect.
         result.append(try writeOutputFileMap().pathString)
 
-        switch target.type {
-        case .library, .test:
+        if self.needsToBeParsedAsLibrary {
             result.append("-parse-as-library")
-
-        case .executable, .systemModule, .binary, .plugin:
-            do { }
         }
 
         if buildParameters.useWholeModuleOptimization {
@@ -832,7 +864,7 @@ public final class SwiftTargetBuildDescription {
         result.append("-experimental-skip-non-inlinable-function-bodies")
         result.append("-force-single-frontend-invocation")
 
-        if target.type == .library || target.type == .test {
+        if self.needsToBeParsedAsLibrary {
             result.append("-parse-as-library")
         }
 
@@ -879,7 +911,7 @@ public final class SwiftTargetBuildDescription {
         // FIXME: Eliminate side effect.
         result.append(try writeOutputFileMap().pathString)
 
-        if target.type == .library || target.type == .test {
+        if self.needsToBeParsedAsLibrary {
             result.append("-parse-as-library")
         }
         // FIXME: Handle WMO
@@ -1455,7 +1487,7 @@ public final class ProductBuildDescription {
             // we will instead have generated a source file containing the redirect.
             // Support for linking tests againsts executables is conditional on the tools
             // version of the package that defines the executable product.
-            if product.executableModule.underlyingTarget is SwiftTarget, toolsVersion >= .vNext {
+            if product.executableModule.underlyingTarget is SwiftTarget, toolsVersion >= .v5_5 {
                 if let flags = buildParameters.linkerFlagsForRenamingMainFunction(of: product.executableModule) {
                     args += flags
                 }
@@ -1628,18 +1660,21 @@ public class BuildPlan {
 
     private static func makeTestManifestTargets(
         _ buildParameters: BuildParameters,
-        _ graph: PackageGraph
+        _ graph: PackageGraph,
+        _ diagnostics: DiagnosticsEngine
     ) throws -> [(product: ResolvedProduct, targetBuildDescription: SwiftTargetBuildDescription)] {
         guard case .manifest(let generate) = buildParameters.testDiscoveryStrategy else {
             preconditionFailure("makeTestManifestTargets should not be used for build plan with useTestManifest set to false")
         }
 
+        var generateRedundant = generate
         var result: [(ResolvedProduct, SwiftTargetBuildDescription)] = []
         for testProduct in graph.allProducts where testProduct.type == .test {
+            generateRedundant = generateRedundant && nil == testProduct.testManifestTarget
             // if test manifest exists, prefer that over test detection,
             // this is designed as an escape hatch when test discovery is not appropriate
             // and for backwards compatibility for projects that have existing test manifests (LinuxMain.swift)
-            let toolsVersion = graph.package(for: testProduct)?.manifest.toolsVersion ?? .vNext
+            let toolsVersion = graph.package(for: testProduct)?.manifest.toolsVersion ?? .v5_5
             if let testManifestTarget = testProduct.testManifestTarget, !generate {
                 let desc = try SwiftTargetBuildDescription(
                     target: testManifestTarget,
@@ -1684,6 +1719,11 @@ public class BuildPlan {
                 result.append((testProduct, target))
             }
         }
+
+        if generateRedundant {
+            diagnostics.emit(warning: "'--enable-test-discovery' option is deprecated; tests are automatically discovered on all platforms")
+        }
+
         return result
     }
 
@@ -1721,7 +1761,7 @@ public class BuildPlan {
             
             // Determine the appropriate tools version to use for the target.
             // This can affect what flags to pass and other semantics.
-            let toolsVersion = graph.package(for: target)?.manifest.toolsVersion ?? .vNext
+            let toolsVersion = graph.package(for: target)?.manifest.toolsVersion ?? .v5_5
 
             switch target.underlyingTarget {
             case is SwiftTarget:
@@ -1758,7 +1798,7 @@ public class BuildPlan {
 
         // Plan the test manifest target.
         if case .manifest = buildParameters.testDiscoveryStrategy {
-            let testManifestTargets = try Self.makeTestManifestTargets(buildParameters, graph)
+            let testManifestTargets = try Self.makeTestManifestTargets(buildParameters, graph, diagnostics)
             for item in testManifestTargets {
                 targetMap[item.targetBuildDescription.target] = .swift(item.targetBuildDescription)
                 testManifestTargetsMap[item.product] = item.targetBuildDescription.target
@@ -1772,7 +1812,7 @@ public class BuildPlan {
 
             // Determine the appropriate tools version to use for the product.
             // This can affect what flags to pass and other semantics.
-            let toolsVersion = graph.package(for: product)?.manifest.toolsVersion ?? .vNext
+            let toolsVersion = graph.package(for: product)?.manifest.toolsVersion ?? .v5_5
             productMap[product] = ProductBuildDescription(
                 product: product,
                 toolsVersion: toolsVersion,
@@ -1982,14 +2022,14 @@ public class BuildPlan {
                 switch target.type {
                 // Executable target have historically only been included if they are directly in the product's
                 // target list.  Otherwise they have always been just build-time dependencies.
-                // In tool version .vNext or greater, we also include executable modules implemented in Swift in
+                // In tool version .v5_5 or greater, we also include executable modules implemented in Swift in
                 // any test products... this is to allow testing of executables.  Note that they are also still
                 // built as separate products that the test can invoke as subprocesses.
                 case .executable:
                     if product.targets.contains(target) {
                         staticTargets.append(target)
                     } else if product.type == .test && target.underlyingTarget is SwiftTarget {
-                        if let toolsVersion = graph.package(for: product)?.manifest.toolsVersion, toolsVersion >= .vNext {
+                        if let toolsVersion = graph.package(for: product)?.manifest.toolsVersion, toolsVersion >= .v5_5 {
                             staticTargets.append(target)
                         }
                     }
@@ -2232,64 +2272,16 @@ public class BuildPlan {
     /// Extracts the library information from an XCFramework.
     private func parseXCFramework(for target: BinaryTarget) throws -> [LibraryInfo] {
         try self.externalLibrariesCache.memoize(key: target) {
-            let metadata = try XCFrameworkMetadata.parse(fileSystem: self.fileSystem, rootPath: target.artifactPath)
-
-            // Check that it supports the target platform and architecture.
-            guard let library = metadata.libraries.first(where: {
-                $0.platform == buildParameters.triple.os.asXCFrameworkPlatformString && $0.architectures.contains(buildParameters.triple.arch.rawValue)
-            }) else {
-                throw StringError("""
-                    artifact '\(target.name)' does not support the target platform and architecture \
-                    ('\(buildParameters.triple)')
-                    """)
-            }
-
-            let libraryDirectory = target.artifactPath.appending(component: library.libraryIdentifier)
-            let libraryPath = libraryDirectory.appending(RelativePath(library.libraryPath))
-            let headersPath = library.headersPath.map({ libraryDirectory.appending(RelativePath($0)) })
-
-            return [LibraryInfo(libraryPath: libraryPath, headersPath: headersPath)]
+            return try target.parseXCFrameworks(for: self.buildParameters.triple, fileSystem: self.fileSystem)
         }
     }
 
     /// Extracts the artifacts  from an artifactsArchive
     private func parseArtifactsArchive(for target: BinaryTarget) throws -> [ExecutableInfo] {
         try self.externalExecutablesCache.memoize(key: target) {
-            let metadata = try ArtifactsArchiveMetadata.parse(fileSystem: self.fileSystem, rootPath: target.artifactPath)
-
-            // filter the artifacts that are relevant to the triple
-            // FIXME: this filter needs to become more sophisticated
-            let supportedArtifacts = metadata.artifacts.filter { $0.value.variants.contains(where: { $0.supportedTriples.contains(buildParameters.triple) }) }
-            // TODO: add support for libraries
-            let executables = supportedArtifacts.filter { $0.value.type == .executable }
-
-            // flatten the results for easy access
-            return executables.reduce(into: [ExecutableInfo](), { partial, entry in
-                let executables = entry.value.variants.map {
-                    ExecutableInfo(name: entry.key, executablePath: target.artifactPath.appending(RelativePath($0.path)))
-                }
-                partial.append(contentsOf: executables)
-            })
+            return try target.parseArtifactArchives(for: self.buildParameters.triple, fileSystem: self.fileSystem)
         }
     }
-}
-
-/// Information about a library from a binary dependency.
-private struct LibraryInfo: Equatable {
-    /// The path to the binary.
-    let libraryPath: AbsolutePath
-
-    /// The path to the headers directory, if one exists.
-    let headersPath: AbsolutePath?
-}
-
-/// Information about an executable from a binary dependency.
-private struct ExecutableInfo: Equatable {
-    /// The tool name
-    let name: String
-
-    /// The path to the executable.
-    let executablePath: AbsolutePath
 }
 
 private extension Diagnostic.Message {
@@ -2373,19 +2365,7 @@ private func generateResourceInfoPlist(
     return true
 }
 
-fileprivate extension Triple.OS {
-    /// Returns a representation of the receiver that can be compared with platform strings declared in an XCFramework.
-    var asXCFrameworkPlatformString: String? {
-        switch self {
-        case .darwin, .linux, .wasi, .windows:
-            return nil // XCFrameworks do not support any of these platforms today.
-        case .macOS:
-            return "macos"
-        }
-    }
-}
-
-fileprivate extension Triple {
+fileprivate extension TSCUtility.Triple {
     var isSupportingStaticStdlib: Bool {
         isLinux() || arch == .wasm32
     }

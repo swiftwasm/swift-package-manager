@@ -95,17 +95,17 @@ private class ToolWorkspaceDelegate: WorkspaceDelegate {
         }
     }
 
-    func cloning(repository: String) {
+    func willCreateWorkingCopy(repository: String, at path: AbsolutePath) {
         queue.async {
-            self.stdoutStream <<< "Cloning \(repository)"
+            self.stdoutStream <<< "Creating working copy for \(repository)"
             self.stdoutStream <<< "\n"
             self.stdoutStream.flush()
         }
     }
 
-    func checkingOut(repository: String, atReference reference: String, to path: AbsolutePath) {
+    func willCheckOut(repository: String, revision: String, at path: AbsolutePath) {
         queue.async {
-            self.stdoutStream <<< "Resolving \(repository) at \(reference)"
+            self.stdoutStream <<< "Resolving \(repository) at \(revision)"
             self.stdoutStream <<< "\n"
             self.stdoutStream.flush()
         }
@@ -413,10 +413,13 @@ public class SwiftTool {
             diagnostics.emit(error: "'--netrc-file' option is only supported on macOS >=10.13")
             #endif
         }
-        
+
+        // --enable-test-discovery should never be called on darwin based platforms
+        #if canImport(Darwin)
         if options.enableTestDiscovery {
             diagnostics.emit(warning: "'--enable-test-discovery' option is deprecated; tests are automatically discovered on all platforms")
         }
+        #endif
 
         if options.shouldDisableManifestCaching {
             diagnostics.emit(warning: "'--disable-package-manifest-caching' option is deprecated; use '--manifest-caching' instead")
@@ -517,6 +520,7 @@ public class SwiftTool {
         let delegate = ToolWorkspaceDelegate(self.stdoutStream, isVerbose: isVerbose, diagnostics: diagnostics)
         let provider = GitRepositoryProvider(processSet: processSet)
         let cachePath = self.options.useRepositoriesCache ? try self.getCachePath() : .none
+        let isXcodeBuildSystemEnabled = self.options.buildSystem == .xcode
         let workspace = Workspace(
             dataPath: buildPath,
             editablesPath: try editablesPath(),
@@ -527,6 +531,7 @@ public class SwiftTool {
             config: try getSwiftPMConfig(),
             repositoryProvider: provider,
             netrcFilePath: try resolvedNetrcFilePath(),
+            additionalFileRules: isXcodeBuildSystemEnabled ? FileRuleDescription.xcbuildFileTypes : [],
             isResolverPrefetchingEnabled: options.shouldEnableResolverPrefetching,
             skipUpdate: options.skipDependencyUpdate,
             enableResolverTrace: options.enableResolverTrace,
@@ -621,14 +626,14 @@ public class SwiftTool {
             // FIXME: At the moment we just pass the built products directory for the host. We will need to extend this
             // with a map of the names of tools available to each plugin. In particular this would not work with any
             // binary targets.
-            let execsDir = dataDir.appending(components: try self._hostToolchain.get().triple.tripleString, buildEnvironment.configuration.dirname)
+            let builtToolsDir = dataDir.appending(components: try self._hostToolchain.get().triple.tripleString, buildEnvironment.configuration.dirname)
             let diagnostics = DiagnosticsEngine()
             
             // Create the cache directory, if needed.
             try localFileSystem.createDirectory(cacheDir, recursive: true)
 
             // Ask the graph to invoke plugins, and return the result.
-            let result = try graph.invokePlugins(buildEnvironment: buildEnvironment, execsDir: execsDir, outputDir: outputDir, pluginScriptRunner: pluginScriptRunner, diagnostics: diagnostics, fileSystem: localFileSystem)
+            let result = try graph.invokePlugins(outputDir: outputDir, builtToolsDir: builtToolsDir, pluginScriptRunner: pluginScriptRunner, diagnostics: diagnostics, fileSystem: localFileSystem)
             return result
         }
         catch {
@@ -880,38 +885,6 @@ private func getEnvBuildPath(workingDir: AbsolutePath) -> AbsolutePath? {
     guard ProcessEnv.vars["SWIFTPM_TESTS_MODULECACHE"] == nil else { return nil }
     guard let env = ProcessEnv.vars["SWIFTPM_BUILD_DIR"] else { return nil }
     return AbsolutePath(env, relativeTo: workingDir)
-}
-
-/// Returns the sandbox profile to be used when parsing manifest on macOS.
-private func sandboxProfile(allowedDirectories: [AbsolutePath]) -> String {
-    let stream = BufferedOutputByteStream()
-    stream <<< "(version 1)" <<< "\n"
-    // Deny everything by default.
-    stream <<< "(deny default)" <<< "\n"
-    // Import the system sandbox profile.
-    stream <<< "(import \"system.sb\")" <<< "\n"
-    // Allow reading all files.
-    stream <<< "(allow file-read*)" <<< "\n"
-    // These are required by the Swift compiler.
-    stream <<< "(allow process*)" <<< "\n"
-    stream <<< "(allow sysctl*)" <<< "\n"
-    // Allow writing in temporary locations.
-    stream <<< "(allow file-write*" <<< "\n"
-    for directory in Platform.darwinCacheDirectories() {
-        // For compiler module cache.
-        stream <<< ##"    (regex #"^\##(directory.pathString)/org\.llvm\.clang.*")"## <<< "\n"
-        // For archive tool.
-        stream <<< ##"    (regex #"^\##(directory.pathString)/ar.*")"## <<< "\n"
-        // For xcrun cache.
-        stream <<< ##"    (regex #"^\##(directory.pathString)/xcrun.*")"## <<< "\n"
-        // For autolink files.
-        stream <<< ##"    (regex #"^\##(directory.pathString)/.*\.(swift|c)-[0-9a-f]+\.autolink")"## <<< "\n"
-    }
-    for directory in allowedDirectories {
-        stream <<< "    (subpath \"\(directory.pathString)\")" <<< "\n"
-    }
-    stream <<< ")" <<< "\n"
-    return stream.bytes.description
 }
 
 /// A wrapper to hold the build system so we can use it inside

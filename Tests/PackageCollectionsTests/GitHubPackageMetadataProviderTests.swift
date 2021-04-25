@@ -1,7 +1,7 @@
 /*
  This source file is part of the Swift.org open source project
 
- Copyright (c) 2020 Apple Inc. and the Swift project authors
+ Copyright (c) 2020-2021 Apple Inc. and the Swift project authors
  Licensed under Apache License v2.0 with Runtime Library Exception
 
  See http://swift.org/LICENSE.txt for license information
@@ -80,6 +80,12 @@ class GitHubPackageMetadataProviderTests: XCTestCase {
                     completion(.success(.init(statusCode: 200,
                                               headers: .init([.init(name: "Content-Length", value: "\(data.count)")]),
                                               body: data)))
+                case (.get, apiURL.appendingPathComponent("languages")):
+                    let path = directoryPath.appending(components: "GitHub", "languages.json")
+                    let data = Data(try! localFileSystem.readFileContents(path).contents)
+                    completion(.success(.init(statusCode: 200,
+                                              headers: .init([.init(name: "Content-Length", value: "\(data.count)")]),
+                                              body: data)))
                 default:
                     XCTFail("method and url should match")
                 }
@@ -95,6 +101,7 @@ class GitHubPackageMetadataProviderTests: XCTestCase {
             XCTAssertEqual(metadata.summary, "This your first repo!")
             XCTAssertEqual(metadata.versions.count, 1)
             XCTAssertEqual(metadata.versions[0].version, TSCUtility.Version("1.0.0"))
+            XCTAssertEqual(metadata.versions[0].title, "1.0.0")
             XCTAssertEqual(metadata.versions[0].summary, "Description of the release")
             XCTAssertEqual(metadata.authors, [PackageCollectionsModel.Package.Author(username: "octocat",
                                                                                      url: URL(string: "https://api.github.com/users/octocat")!,
@@ -103,6 +110,7 @@ class GitHubPackageMetadataProviderTests: XCTestCase {
             XCTAssertEqual(metadata.license?.type, PackageCollectionsModel.LicenseType.MIT)
             XCTAssertEqual(metadata.license?.url, URL(string: "https://raw.githubusercontent.com/benbalter/gman/master/LICENSE?lab=true"))
             XCTAssertEqual(metadata.watchersCount, 80)
+            XCTAssertEqual(metadata.languages, ["Swift", "Shell", "C"])
         }
     }
 
@@ -226,10 +234,14 @@ class GitHubPackageMetadataProviderTests: XCTestCase {
                 }
             }
 
+            // Disable cache so we hit the API
+            let configuration = GitHubPackageMetadataProvider.Configuration(cacheTTLInSeconds: -1)
+
             var httpClient = HTTPClient(handler: handler)
             httpClient.configuration.circuitBreakerStrategy = .none
             httpClient.configuration.retryStrategy = .none
-            let provider = GitHubPackageMetadataProvider(httpClient: httpClient)
+
+            let provider = GitHubPackageMetadataProvider(configuration: configuration, httpClient: httpClient)
             let reference = PackageReference(repository: RepositorySpecifier(url: repoURL))
             for index in 0 ... total * 2 {
                 if index >= total {
