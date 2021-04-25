@@ -1173,7 +1173,7 @@ public final class ProductBuildDescription {
 
     public enum LTOIntermediate: Comparable, Equatable {
         case target(description: SwiftTargetBuildDescription, mode: BuildParameters.LTOMode)
-        case stdlib(triple: Triple, toolchain: Toolchain, mode: BuildParameters.LTOMode)
+        case stdlib(triple: TSCUtility.Triple, toolchain: Toolchain, mode: BuildParameters.LTOMode)
         init(description: SwiftTargetBuildDescription, mode: BuildParameters.LTOMode) {
             self = .target(description: description, mode: mode)
         }
