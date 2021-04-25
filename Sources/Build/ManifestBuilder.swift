@@ -485,7 +485,7 @@ extension LLBuildManifestBuilder {
                 description: "Compiling module \(target.target.name) for LTO",
                 inputs: inputs,
                 outputs: outputNodes,
-                args: target.emitSwiftLTOIntermediatesCommandLine(mode: ltoMode))
+                arguments: target.emitSwiftLTOIntermediatesCommandLine(mode: ltoMode))
             return outputNodes
         } else {
             let objectNodes = target.objects.map(Node.file)
@@ -494,7 +494,7 @@ extension LLBuildManifestBuilder {
                 description: "Compiling module \(target.target.name)",
                 inputs: inputs,
                 outputs: objectNodes,
-                args: try target.emitObjectsCommandLine()
+                arguments: try target.emitObjectsCommandLine()
             )
             return objectNodes
         }
