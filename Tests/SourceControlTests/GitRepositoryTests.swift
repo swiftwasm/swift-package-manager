@@ -38,7 +38,7 @@ class GitRepositoryTests: XCTestCase {
             // Test the provider.
             let testCheckoutPath = path.appending(component: "checkout")
             let provider = GitRepositoryProvider()
-            XCTAssertTrue(try provider.checkoutExists(at: testRepoPath))
+            XCTAssertTrue(try provider.workingCopyExists(at: testRepoPath))
             let repoSpec = RepositorySpecifier(url: testRepoPath.pathString)
             try! provider.fetch(repository: repoSpec, to: testCheckoutPath)
 
@@ -110,16 +110,22 @@ class GitRepositoryTests: XCTestCase {
             XCTAssertEqual(initialCommitHash, GitRepository.Hash("a8b9fcbf893b3b02c0196609059ebae37aeb7f0b"))
 
             // Check commit loading.
-            let initialCommit = try repo.read(commit: initialCommitHash)
+            let initialCommit = try repo.readCommit(hash: initialCommitHash)
             XCTAssertEqual(initialCommit.hash, initialCommitHash)
             XCTAssertEqual(initialCommit.tree, GitRepository.Hash("9d463c3b538619448c5d2ecac379e92f075a8976"))
 
             // Check tree loading.
-            let initialTree = try repo.read(tree: initialCommit.tree)
-            XCTAssertEqual(initialTree.hash, initialCommit.tree)
+            let initialTree = try repo.readTree(hash: initialCommit.tree)
+            guard case .hash(let initialTreeHash) = initialTree.location else {
+                return XCTFail("wrong pointer")
+            }
+            XCTAssertEqual(initialTreeHash, initialCommit.tree)
             XCTAssertEqual(initialTree.contents.count, 1)
             guard let readmeEntry = initialTree.contents.first else { return XCTFail() }
-            XCTAssertEqual(readmeEntry.hash, GitRepository.Hash("92513075b3491a54c45a880be25150d92388e7bc"))
+            guard case .hash(let readmeEntryHash) = readmeEntry.location else {
+                return XCTFail("wrong pointer")
+            }
+            XCTAssertEqual(readmeEntryHash, GitRepository.Hash("92513075b3491a54c45a880be25150d92388e7bc"))
             XCTAssertEqual(readmeEntry.type, .blob)
             XCTAssertEqual(readmeEntry.name, "README.txt")
 
@@ -127,15 +133,15 @@ class GitRepositoryTests: XCTestCase {
             //
             // This is a commit which has a subdirectory 'funny-names' with
             // paths with special characters.
-            let funnyNamesCommit = try repo.read(commit: repo.resolveHash(treeish: "a7b19a7"))
-            let funnyNamesRoot = try repo.read(tree: funnyNamesCommit.tree)
+            let funnyNamesCommit = try repo.readCommit(hash: repo.resolveHash(treeish: "a7b19a7"))
+            let funnyNamesRoot = try repo.readTree(hash: funnyNamesCommit.tree)
             XCTAssertEqual(funnyNamesRoot.contents.map{ $0.name }, ["README.txt", "funny-names", "subdir"])
             guard funnyNamesRoot.contents.count == 3 else { return XCTFail() }
 
             // FIXME: This isn't yet supported.
             let funnyNamesSubdirEntry = funnyNamesRoot.contents[1]
             XCTAssertEqual(funnyNamesSubdirEntry.type, .tree)
-            if let _ = try? repo.read(tree: funnyNamesSubdirEntry.hash) {
+            if let _ = try? repo.readTree(location: funnyNamesSubdirEntry.location) {
                 XCTFail("unexpected success reading tree with funny names")
             }
        }
@@ -157,7 +163,7 @@ class GitRepositoryTests: XCTestCase {
             try repo.stageEverything()
             try repo.commit()
             // We should be able to read a repo which as a submdoule.
-            _ = try repo.read(tree: try repo.resolveHash(treeish: "main"))
+            _ = try repo.readTree(hash: try repo.resolveHash(treeish: "main"))
         }
     }
 
@@ -271,18 +277,18 @@ class GitRepositoryTests: XCTestCase {
 
             // Clone off a checkout.
             let checkoutPath = path.appending(component: "checkout")
-            try provider.cloneCheckout(repository: repoSpec, at: testClonePath, to: checkoutPath, editable: false)
+            _ = try provider.createWorkingCopy(repository: repoSpec, sourcePath: testClonePath, at: checkoutPath, editable: false)
             // The remote of this checkout should point to the clone.
             XCTAssertEqual(try GitRepository(path: checkoutPath).remotes()[0].url, testClonePath.pathString)
 
             let editsPath = path.appending(component: "edit")
-            try provider.cloneCheckout(repository: repoSpec, at: testClonePath, to: editsPath, editable: true)
+            _ = try provider.createWorkingCopy(repository: repoSpec, sourcePath: testClonePath, at: editsPath, editable: true)
             // The remote of this checkout should point to the original repo.
             XCTAssertEqual(try GitRepository(path: editsPath).remotes()[0].url, testRepoPath.pathString)
 
             // Check the working copies.
             for path in [checkoutPath, editsPath] {
-                let workingCopy = try provider.openCheckout(at: path)
+                let workingCopy = try provider.openWorkingCopy(at: path)
                 try workingCopy.checkout(tag: "test-tag")
                 XCTAssertEqual(try workingCopy.getCurrentRevision(), currentRevision)
                 XCTAssert(localFileSystem.exists(path.appending(component: "test.txt")))
@@ -312,8 +318,7 @@ class GitRepositoryTests: XCTestCase {
 
             // Clone off a checkout.
             let checkoutPath = path.appending(component: "checkout")
-            try provider.cloneCheckout(repository: repoSpec, at: testClonePath, to: checkoutPath, editable: false)
-            let checkoutRepo = try provider.openCheckout(at: checkoutPath)
+            let checkoutRepo = try provider.createWorkingCopy(repository: repoSpec, sourcePath: testClonePath, at: checkoutPath, editable: false)
             XCTAssertEqual(try checkoutRepo.getTags(), ["1.2.3"])
 
             // Add a new file to original repo.
@@ -352,8 +357,7 @@ class GitRepositoryTests: XCTestCase {
 
             // Clone off a checkout.
             let checkoutPath = path.appending(component: "checkout")
-            try provider.cloneCheckout(repository: repoSpec, at: testClonePath, to: checkoutPath, editable: true)
-            let checkoutRepo = try provider.openCheckout(at: checkoutPath)
+            let checkoutRepo = try provider.createWorkingCopy(repository: repoSpec, sourcePath: testClonePath, at: checkoutPath, editable: true)
 
             XCTAssertFalse(try checkoutRepo.hasUnpushedCommits())
             // Add a new file to checkout.
@@ -528,7 +532,7 @@ class GitRepositoryTests: XCTestCase {
 
             // Fetch and clone repo foo.
             try provider.fetch(repository: fooSpecifier, to: fooRepoPath)
-            try provider.cloneCheckout(repository: fooSpecifier, at: fooRepoPath, to: fooWorkingPath, editable: false)
+            _ = try provider.createWorkingCopy(repository: fooSpecifier, sourcePath: fooRepoPath, at: fooWorkingPath, editable: false)
 
             let fooRepo = GitRepository(path: fooRepoPath, isWorkingRepo: false)
             let fooWorkingRepo = GitRepository(path: fooWorkingPath)
@@ -600,8 +604,7 @@ class GitRepositoryTests: XCTestCase {
 
             // Clone off a checkout.
             let checkoutPath = path.appending(component: "checkout")
-            try provider.cloneCheckout(repository: repoSpec, at: testClonePath, to: checkoutPath, editable: false)
-            let checkoutRepo = try provider.openCheckout(at: checkoutPath)
+            let checkoutRepo = try provider.createWorkingCopy(repository: repoSpec, sourcePath: testClonePath, at: checkoutPath, editable: false)
 
             // The object store should be valid.
             XCTAssertTrue(checkoutRepo.isAlternateObjectStoreValid())
@@ -674,9 +677,8 @@ class GitRepositoryTests: XCTestCase {
 
             // Clone off a checkout.
             let checkoutPath = path.appending(component: "checkout")
-            try provider.cloneCheckout(repository: repoSpec, at: testClonePath, to: checkoutPath, editable: false)
+            let checkoutRepo = try provider.createWorkingCopy(repository: repoSpec, sourcePath: testClonePath, at: checkoutPath, editable: false)
             XCTAssertFalse(localFileSystem.exists(checkoutPath.appending(component: "file.swift")))
-            let checkoutRepo = try provider.openCheckout(at: checkoutPath)
 
             // Try to check out the `main` branch.
             try checkoutRepo.checkout(revision: Revision(identifier: "newMain"))

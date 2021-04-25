@@ -15,8 +15,8 @@ import TSCBasic
 class PluginTests: XCTestCase {
     
     func testUseOfBuildToolPluginTargetByExecutableInSamePackage() throws {
-        // Check if the host compiler supports the '-entry-point-function-name' flag.  It's not needed for this test but is needed to build any executable from a package that uses tools version 999.0.
-        try XCTSkipUnless(doesHostSwiftCompilerSupportRenamingMainSymbol(), "skipping because host compiler doesn't support '-entry-point-function-name'")
+        // Check if the host compiler supports the '-entry-point-function-name' flag.  It's not needed for this test but is needed to build any executable from a package that uses tools version 5.5.
+        try XCTSkipUnless(Resources.default.swiftCompilerSupportsRenamingMainSymbol, "skipping because host compiler doesn't support '-entry-point-function-name'")
         
         fixture(name: "Miscellaneous/Plugins") { path in
             do {
@@ -34,8 +34,8 @@ class PluginTests: XCTestCase {
     }
 
     func testUseOfBuildToolPluginProductByExecutableAcrossPackages() throws {
-        // Check if the host compiler supports the '-entry-point-function-name' flag.  It's not needed for this test but is needed to build any executable from a package that uses tools version 999.0.
-        try XCTSkipUnless(doesHostSwiftCompilerSupportRenamingMainSymbol(), "skipping because host compiler doesn't support '-entry-point-function-name'")
+        // Check if the host compiler supports the '-entry-point-function-name' flag.  It's not needed for this test but is needed to build any executable from a package that uses tools version 5.5.
+        try XCTSkipUnless(Resources.default.swiftCompilerSupportsRenamingMainSymbol, "skipping because host compiler doesn't support '-entry-point-function-name'")
 
         fixture(name: "Miscellaneous/Plugins") { path in
             do {
@@ -53,8 +53,8 @@ class PluginTests: XCTestCase {
     }
 
     func testUseOfPrebuildPluginTargetByExecutableAcrossPackages() throws {
-        // Check if the host compiler supports the '-entry-point-function-name' flag.  It's not needed for this test but is needed to build any executable from a package that uses tools version 999.0.
-        try XCTSkipUnless(doesHostSwiftCompilerSupportRenamingMainSymbol(), "skipping because host compiler doesn't support '-entry-point-function-name'")
+        // Check if the host compiler supports the '-entry-point-function-name' flag.  It's not needed for this test but is needed to build any executable from a package that uses tools version 5.5.
+        try XCTSkipUnless(Resources.default.swiftCompilerSupportsRenamingMainSymbol, "skipping because host compiler doesn't support '-entry-point-function-name'")
 
         fixture(name: "Miscellaneous/Plugins") { path in
             do {
@@ -72,8 +72,8 @@ class PluginTests: XCTestCase {
     }
 
     func testContrivedTestCases() throws {
-        // Check if the host compiler supports the '-entry-point-function-name' flag.  It's not needed for this test but is needed to build any executable from a package that uses tools version 999.0.
-        try XCTSkipUnless(doesHostSwiftCompilerSupportRenamingMainSymbol(), "skipping because host compiler doesn't support '-entry-point-function-name'")
+        // Check if the host compiler supports the '-entry-point-function-name' flag.  It's not needed for this test but is needed to build any executable from a package that uses tools version 5.5.
+        try XCTSkipUnless(Resources.default.swiftCompilerSupportsRenamingMainSymbol, "skipping because host compiler doesn't support '-entry-point-function-name'")
         
         fixture(name: "Miscellaneous/Plugins") { path in
             do {
@@ -90,4 +90,39 @@ class PluginTests: XCTestCase {
         }
     }
 
+    func testPluginScriptSandbox() throws {
+        // Check if the host compiler supports the '-entry-point-function-name' flag.  It's not needed for this test but is needed to build any executable from a package that uses tools version 5.5.
+        try XCTSkipUnless(Resources.default.swiftCompilerSupportsRenamingMainSymbol, "skipping because host compiler doesn't support '-entry-point-function-name'")
+        #if os(macOS)
+        fixture(name: "Miscellaneous/Plugins") { path in
+            do {
+                let (stdout, _) = try executeSwiftBuild(path.appending(component: "SandboxTesterPlugin"), configuration: .Debug, extraArgs: ["--product", "MyLocalTool"], env: ["SWIFTPM_ENABLE_PLUGINS": "1"])
+                XCTAssert(stdout.contains("Linking MyLocalTool"), "stdout:\n\(stdout)")
+                XCTAssert(stdout.contains("Build complete!"), "stdout:\n\(stdout)")
+            }
+            catch {
+                print(error)
+                throw error
+            }
+        }
+        #endif
+    }
+
+    func testUseOfVendedBinaryTool() throws {
+        // Check if the host compiler supports the '-entry-point-function-name' flag.  It's not needed for this test but is needed to build any executable from a package that uses tools version 5.5.
+        try XCTSkipUnless(Resources.default.swiftCompilerSupportsRenamingMainSymbol, "skipping because host compiler doesn't support '-entry-point-function-name'")
+        #if os(macOS)
+        fixture(name: "Miscellaneous/Plugins") { path in
+            do {
+                let (stdout, _) = try executeSwiftBuild(path.appending(component: "MyBinaryToolPlugin"), configuration: .Debug, extraArgs: ["--product", "MyLocalTool"], env: ["SWIFTPM_ENABLE_PLUGINS": "1"])
+                XCTAssert(stdout.contains("Linking MyLocalTool"), "stdout:\n\(stdout)")
+                XCTAssert(stdout.contains("Build complete!"), "stdout:\n\(stdout)")
+            }
+            catch {
+                print(error)
+                throw error
+            }
+        }
+        #endif
+    }
 }

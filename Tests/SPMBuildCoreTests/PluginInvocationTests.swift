@@ -10,6 +10,7 @@
 
 import XCTest
 import TSCBasic
+import TSCUtility
 
 import PackageGraph
 import PackageModel
@@ -84,10 +85,14 @@ class PluginInvocationTests: XCTestCase {
         
         // A fake PluginScriptRunner that just checks the input conditions and returns canned output.
         struct MockPluginScriptRunner: PluginScriptRunner {
+            var hostTriple: Triple {
+                return Resources.default.toolchain.triple
+            }
             func runPluginScript(
                 sources: Sources,
                 inputJSON: Data,
                 toolsVersion: ToolsVersion,
+                writableDirectories: [AbsolutePath],
                 diagnostics: DiagnosticsEngine,
                 fileSystem: FileSystem
             ) throws -> (outputJSON: Data, stdoutText: Data) {
@@ -112,30 +117,32 @@ class PluginInvocationTests: XCTestCase {
                             line: 42
                         )
                     ],
-                    commands: [
+                    buildCommands: [
                         .init(
                             displayName: "Do something",
                             executable: "/bin/FooTool",
                             arguments: ["-c", "/Foo/Sources/Foo/SomeFile.abc"],
-                            workingDirectory: "/Foo/Sources/Foo",
                             environment: [
                                 "X": "Y"
                             ],
-                            inputPaths: [],
-                            outputPaths: []
+                            workingDirectory: "/Foo/Sources/Foo",
+                            inputFiles: [],
+                            outputFiles: []
                         )
-                ])
+                    ],
+                    prebuildCommands: [
+                    ]
+                )
                 let outputJSON = try encoder.encode(result)
                 return (outputJSON: outputJSON, stdoutText: "Hello Plugin!".data(using: .utf8)!)
             }
         }
         
         // Construct a canned input and run plugins using our MockPluginScriptRunner().
-        let buildEnv = BuildEnvironment(platform: .macOS, configuration: .debug)
-        let execsDir = AbsolutePath("/Foo/.build/debug")
         let outputDir = AbsolutePath("/Foo/.build")
+        let builtToolsDir = AbsolutePath("/Foo/.build/debug")
         let pluginRunner = MockPluginScriptRunner()
-        let results = try graph.invokePlugins(buildEnvironment: buildEnv, execsDir: execsDir, outputDir: outputDir, pluginScriptRunner: pluginRunner, diagnostics: diagnostics, fileSystem: fileSystem)
+        let results = try graph.invokePlugins(outputDir: outputDir, builtToolsDir: builtToolsDir, pluginScriptRunner: pluginRunner, diagnostics: diagnostics, fileSystem: fileSystem)
         
         // Check the canned output to make sure nothing was lost in transport.
         XCTAssertNoDiagnostics(diagnostics)
@@ -145,20 +152,16 @@ class PluginInvocationTests: XCTestCase {
         
         XCTAssertEqual(evalResults.count, 1)
         let evalFirstResult = try XCTUnwrap(evalResults.first)
-        XCTAssertEqual(evalFirstResult.commands.count, 1)
-        let evalFirstCommand = try XCTUnwrap(evalFirstResult.commands.first)
-        if case .buildToolCommand(let name, let exec, let args, let env, let wdir, let inputs, let outputs) = evalFirstCommand {
-            XCTAssertEqual(name, "Do something")
-            XCTAssertEqual(exec, "/bin/FooTool")
-            XCTAssertEqual(args, ["-c", "/Foo/Sources/Foo/SomeFile.abc"])
-            XCTAssertEqual(wdir, AbsolutePath("/Foo/Sources/Foo"))
-            XCTAssertEqual(env, ["X": "Y"])
-            XCTAssertEqual(inputs, [])
-            XCTAssertEqual(outputs, [])
-        }
-        else {
-            XCTFail("The command provided by the plugin didn't match expectations")
-        }
+        XCTAssertEqual(evalFirstResult.prebuildCommands.count, 0)
+        XCTAssertEqual(evalFirstResult.buildCommands.count, 1)
+        let evalFirstCommand = try XCTUnwrap(evalFirstResult.buildCommands.first)
+        XCTAssertEqual(evalFirstCommand.configuration.displayName, "Do something")
+        XCTAssertEqual(evalFirstCommand.configuration.executable, "/bin/FooTool")
+        XCTAssertEqual(evalFirstCommand.configuration.arguments, ["-c", "/Foo/Sources/Foo/SomeFile.abc"])
+        XCTAssertEqual(evalFirstCommand.configuration.environment, ["X": "Y"])
+        XCTAssertEqual(evalFirstCommand.configuration.workingDirectory, AbsolutePath("/Foo/Sources/Foo"))
+        XCTAssertEqual(evalFirstCommand.inputFiles, [])
+        XCTAssertEqual(evalFirstCommand.outputFiles, [])
         
         XCTAssertEqual(evalFirstResult.diagnostics.count, 1)
         let evalFirstDiagnostic = try XCTUnwrap(evalFirstResult.diagnostics.first)

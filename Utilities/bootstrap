@@ -380,10 +380,14 @@ def install(args):
         install_libswiftpm_dylib(args, "SwiftPMDataModel", args.libswiftpmdatamodel_install_dir, libswiftpmdatamodel_modules)
 
 def install_swiftpm(prefix, args):
-    # Install swiftpm binaries.
-    for binary in ["swift-build", "swift-test", "swift-run", "swift-package", "swift-package-collection"]:
-        dest = os.path.join(prefix, "bin")
-        install_binary(args, binary, dest)
+    # Install swiftpm binary and create tool symlinks.
+    cli_tool_dest = os.path.join(prefix, "bin")
+    install_binary(args, "swift-package", cli_tool_dest)
+    for tool in ["swift-build", "swift-test", "swift-run", "swift-package-collection"]:
+        src = "swift-package"
+        dest = os.path.join(cli_tool_dest, tool)
+        note("Creating tool symlink from %s to %s" % (src, dest))
+        symlink_force(src, dest)
 
     if platform.system() == 'Darwin':
         dest = os.path.join(prefix, "libexec", "swift", "pm")
@@ -554,9 +558,6 @@ def build_yams(args):
         cmake_flags.append("-DCMAKE_C_FLAGS=-target %s%s" % (get_build_target(args), g_macos_deployment_target))
         cmake_flags.append("-DCMAKE_OSX_DEPLOYMENT_TARGET=%s" % g_macos_deployment_target)
     else:
-        if args.dispatch_build_dir:
-            cmake_flags.append(get_dispatch_cmake_arg(args))
-
         if args.foundation_build_dir:
             cmake_flags.append(get_foundation_cmake_arg(args))
 

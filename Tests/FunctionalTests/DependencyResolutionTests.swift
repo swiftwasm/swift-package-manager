@@ -91,10 +91,10 @@ class DependencyResolutionTests: XCTestCase {
             // run with no mirror
             do {
                 let output = try executeSwiftPackage(appPath, extraArgs: ["show-dependencies"])
-                XCTAssertTrue(output.stdout.contains("Cloning \(prefix.pathString)/Foo\n"), output.stdout)
-                XCTAssertTrue(output.stdout.contains("Cloning \(prefix.pathString)/Bar\n"), output.stdout)
-                XCTAssertTrue(output.stdout.contains("Foo<\(prefix.pathString)/Foo@unspecified"), output.stdout)
-                XCTAssertTrue(output.stdout.contains("Bar<\(prefix.pathString)/Bar@unspecified"), output.stdout)
+                XCTAssertTrue(output.stdout.contains("Fetching \(prefix.pathString)/Foo\n"), output.stdout)
+                XCTAssertTrue(output.stdout.contains("Fetching \(prefix.pathString)/Bar\n"), output.stdout)
+                XCTAssertTrue(output.stdout.contains("foo<\(prefix.pathString)/Foo@unspecified"), output.stdout)
+                XCTAssertTrue(output.stdout.contains("bar<\(prefix.pathString)/Bar@unspecified"), output.stdout)
 
                 let pins = try String(bytes: localFileSystem.readFileContents(appPinsPath).contents, encoding: .utf8)!
                 XCTAssertTrue(pins.contains("\"\(prefix.pathString)/Foo\""), pins)
@@ -115,13 +115,13 @@ class DependencyResolutionTests: XCTestCase {
             // run with mirror
             do {
                 let output = try executeSwiftPackage(appPath, extraArgs: ["show-dependencies"])
-                XCTAssertTrue(output.stdout.contains("Cloning \(prefix.pathString)/Foo\n"), output.stdout)
-                XCTAssertTrue(output.stdout.contains("Cloning \(prefix.pathString)/BarMirror\n"), output.stdout)
-                XCTAssertFalse(output.stdout.contains("Cloning \(prefix.pathString)/Bar\n"), output.stdout)
+                XCTAssertTrue(output.stdout.contains("Fetching \(prefix.pathString)/Foo\n"), output.stdout)
+                XCTAssertTrue(output.stdout.contains("Fetching \(prefix.pathString)/BarMirror\n"), output.stdout)
+                XCTAssertFalse(output.stdout.contains("Fetching \(prefix.pathString)/Bar\n"), output.stdout)
 
-                XCTAssertTrue(output.stdout.contains("Foo<\(prefix.pathString)/Foo@unspecified"), output.stdout)
-                XCTAssertTrue(output.stdout.contains("Bar<\(prefix.pathString)/BarMirror@unspecified"), output.stdout)
-                XCTAssertFalse(output.stdout.contains("Bar<\(prefix.pathString)/Bar@unspecified"), output.stdout)
+                XCTAssertTrue(output.stdout.contains("foo<\(prefix.pathString)/Foo@unspecified"), output.stdout)
+                XCTAssertTrue(output.stdout.contains("barmirror<\(prefix.pathString)/BarMirror@unspecified"), output.stdout)
+                XCTAssertFalse(output.stdout.contains("bar<\(prefix.pathString)/Bar@unspecified"), output.stdout)
 
                 let pins = try String(bytes: localFileSystem.readFileContents(appPinsPath).contents, encoding: .utf8)!
                 XCTAssertTrue(pins.contains("\"\(prefix.pathString)/Foo\""), pins)

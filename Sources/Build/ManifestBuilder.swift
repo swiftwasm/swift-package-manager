@@ -284,7 +284,7 @@ extension LLBuildManifestBuilder {
                     description: description,
                     inputs: manifestNodeInputs,
                     outputs: jobOutputs,
-                    args: arguments
+                    arguments: arguments
                 )
             } else {
                 manifest.addShellCmd(
@@ -292,7 +292,7 @@ extension LLBuildManifestBuilder {
                     description: description,
                     inputs: manifestNodeInputs,
                     outputs: jobOutputs,
-                    args: arguments
+                    arguments: arguments
                 )
             }
         }
@@ -465,7 +465,7 @@ extension LLBuildManifestBuilder {
             description: "Emitting module for \(target.target.name)",
             inputs: inputs,
             outputs: [moduleNode],
-            args: target.emitModuleCommandLine()
+            arguments: target.emitModuleCommandLine()
         )
 
         let cmdName = target.target.getCommandName(config: buildConfig)
@@ -485,7 +485,7 @@ extension LLBuildManifestBuilder {
                 description: "Compiling module \(target.target.name) for LTO",
                 inputs: inputs,
                 outputs: outputNodes,
-                args: target.emitSwiftLTOIntermediatesCommandLine(mode: ltoMode))
+                arguments: target.emitSwiftLTOIntermediatesCommandLine(mode: ltoMode))
             return outputNodes
         } else {
             let objectNodes = target.objects.map(Node.file)
@@ -494,7 +494,7 @@ extension LLBuildManifestBuilder {
                 description: "Compiling module \(target.target.name)",
                 inputs: inputs,
                 outputs: objectNodes,
-                args: try target.emitObjectsCommandLine()
+                arguments: try target.emitObjectsCommandLine()
             )
             return objectNodes
         }
@@ -518,10 +518,10 @@ extension LLBuildManifestBuilder {
             importPath: buildParameters.buildPath,
             tempsPath: target.tempsPath,
             objects: target.objects,
-            otherArgs: target.compileArguments(),
+            otherArguments: target.compileArguments(),
             sources: target.sources,
             isLibrary: isLibrary,
-            WMO: buildParameters.configuration == .release
+            wholeModuleOptimization: buildParameters.configuration == .release
         )
     }
 
@@ -608,20 +608,18 @@ extension LLBuildManifestBuilder {
             }
         }
 
-        // Add any build tool commands created by plugins for the target (prebuild and postbuild commands are handled outside the build).
-        for command in target.pluginInvocationResults.reduce([], { $0 + $1.commands }) {
-            if case .buildToolCommand(let displayName, let executable, let arguments, let environment, let workingDirectory, let inputPaths, let outputPaths) = command {
-                // Create a shell command to invoke the executable.  We include the path of the executable as a dependency.
-                let execPath = AbsolutePath(executable, relativeTo: buildParameters.buildPath)
-                manifest.addShellCmd(
-                    name: displayName,
-                    description: displayName,
-                    inputs: [.file(execPath)] + inputPaths.map{ .file($0) },
-                    outputs: outputPaths.map{ .file($0) },
-                    args: [execPath.pathString] + arguments,
-                    environ: environment,
-                    workingDir: workingDirectory?.pathString)
-            }
+        // Add any regular build commands created by plugins for the target (prebuild commands are handled separately).
+        for command in target.pluginInvocationResults.reduce([], { $0 + $1.buildCommands }) {
+            // Create a shell command to invoke the executable. We include the path of the executable as a dependency.
+            let execPath = AbsolutePath(command.configuration.executable, relativeTo: buildParameters.buildPath)
+            manifest.addShellCmd(
+                name: command.configuration.displayName,
+                description: command.configuration.displayName,
+                inputs: [.file(execPath)] + command.inputFiles.map{ .file($0) },
+                outputs: command.outputFiles.map{ .file($0) },
+                arguments: [execPath.pathString] + command.configuration.arguments,
+                environment: command.configuration.environment,
+                workingDirectory: command.configuration.workingDirectory?.pathString)
         }
 
         return inputs
@@ -661,7 +659,7 @@ extension LLBuildManifestBuilder {
             description: "Wrapping AST for \(target.target.name) for debugging",
             inputs: [.file(target.moduleOutputPath)],
             outputs: [.file(target.wrappedModuleOutputPath)],
-            args: moduleWrapArgs)
+            arguments: moduleWrapArgs)
     }
 }
 
@@ -755,8 +753,8 @@ extension LLBuildManifestBuilder {
                 description: "Compiling \(target.target.name) \(path.filename)",
                 inputs: inputs + [.file(path.source)],
                 outputs: [objectFileNode],
-                args: args,
-                deps: path.deps.pathString
+                arguments: args,
+                dependencies: path.deps.pathString
             )
         }
 
@@ -832,7 +830,7 @@ extension LLBuildManifestBuilder {
                     description: "Merging module summary \(buildProduct.binary.prettyPath())",
                     inputs: buildProduct.ltoIntermediates.map({ Node.file($0.summary) }),
                     outputs: [.file(buildProduct.mergedSummaryPath)],
-                    args: buildProduct.mergeSummaryArguments()
+                    arguments: buildProduct.mergeSummaryArguments()
                 )
                 for intermediate in buildProduct.ltoIntermediates {
                     let dependency = intermediate.moduleC99name
@@ -845,7 +843,7 @@ extension LLBuildManifestBuilder {
                         description: "Lowering SIB \(dependency)",
                         inputs: [.file(intermediate.sib), .file(buildProduct.mergedSummaryPath)],
                         outputs: [.file(object)],
-                        args: buildProduct.lowerSIBArguments(intermediate, objectOutput: object)
+                        arguments: buildProduct.lowerSIBArguments(intermediate, objectOutput: object)
                     )
                 }
                 let inputs = buildProduct.objects + buildProduct.dylibs.map({ $0.binary })
@@ -854,7 +852,7 @@ extension LLBuildManifestBuilder {
                     description: "Linking \(buildProduct.binary.prettyPath())",
                     inputs: inputs.map(Node.file),
                     outputs: [.file(buildProduct.binary)],
-                    args: try buildProduct.linkArguments()
+                    arguments: try buildProduct.linkArguments()
                 )
             case .none, .LLVM:
                 let inputs = buildProduct.objects + buildProduct.dylibs.map({ $0.binary })
@@ -864,7 +862,7 @@ extension LLBuildManifestBuilder {
                     description: "Linking \(buildProduct.binary.prettyPath())",
                     inputs: inputs.map(Node.file),
                     outputs: [.file(buildProduct.binary)],
-                    args: try buildProduct.linkArguments()
+                    arguments: try buildProduct.linkArguments()
                 )
             }
         }

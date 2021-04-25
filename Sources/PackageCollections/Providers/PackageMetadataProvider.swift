@@ -35,11 +35,13 @@ extension Model {
         let readmeURL: Foundation.URL?
         let license: PackageCollectionsModel.License?
         let authors: [PackageCollectionsModel.Package.Author]?
+        let languages: Set<String>?
         let processedAt: Date
     }
 
     struct PackageBasicVersionMetadata: Equatable {
         let version: TSCUtility.Version
+        let title: String?
         let summary: String?
         let createdAt: Date
         let publishedAt: Date?

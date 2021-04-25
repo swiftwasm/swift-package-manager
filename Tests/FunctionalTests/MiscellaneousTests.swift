@@ -306,10 +306,11 @@ class MiscellaneousTestCase: XCTestCase {
         }
     }
 
-    func testOverridingSwiftcArguments() throws {
+    func testOverridingDeploymentTargetUsingSwiftCompilerArgument() throws {
       #if os(macOS)
-        fixture(name: "Miscellaneous/OverrideSwiftcArgs") { prefix in
-            try executeSwiftBuild(prefix, Xswiftc: ["-target", "x86_64-apple-macosx10.20"])
+        fixture(name: "Miscellaneous/DistantFutureDeploymentTarget") { prefix in
+            let hostTriple = Resources.default.toolchain.triple
+            try executeSwiftBuild(prefix, Xswiftc: ["-target", "\(hostTriple.arch)-apple-macosx41.0"])
         }
       #endif
     }
@@ -515,12 +516,35 @@ class MiscellaneousTestCase: XCTestCase {
             XCTAssertMatch(diff, .contains("Func Foo.foo() has return type change from Swift.String to Swift.Int"))
         }
     }
-    
-    func testEnableTestDiscoveryDeprecation() {
+
+    func testEnableTestDiscoveryDeprecation() throws {
+        let compilerDiagnosticFlags = ["-Xswiftc", "-Xfrontend", "-Xswiftc", "-Rmodule-interface-rebuild"]
+        #if canImport(Darwin)
+        // should emit when LinuxMain is present
         fixture(name: "Miscellaneous/TestDiscovery/Simple") { path in
-            let (_, stderr) = try SwiftPMProduct.SwiftTest.execute(["--enable-test-discovery"], packagePath: path)
+            let (_, stderr) = try SwiftPMProduct.SwiftTest.execute(["--enable-test-discovery"] + compilerDiagnosticFlags, packagePath: path)
             XCTAssertMatch(stderr, .contains("warning: '--enable-test-discovery' option is deprecated"))
         }
+
+        // should emit when LinuxMain is not present
+        fixture(name: "Miscellaneous/TestDiscovery/Simple") { path in
+            try localFileSystem.writeFileContents(path.appending(components: "Tests", SwiftTarget.testManifestNames.first!), bytes: "fatalError(\"boom\")")
+            let (_, stderr) = try SwiftPMProduct.SwiftTest.execute(["--enable-test-discovery"] + compilerDiagnosticFlags, packagePath: path)
+            XCTAssertMatch(stderr, .contains("warning: '--enable-test-discovery' option is deprecated"))
+        }
+        #else
+        // should emit when LinuxMain is present
+        fixture(name: "Miscellaneous/TestDiscovery/Simple") { path in
+            let (_, stderr) = try SwiftPMProduct.SwiftTest.execute(["--enable-test-discovery"] + compilerDiagnosticFlags, packagePath: path)
+            XCTAssertMatch(stderr, .contains("warning: '--enable-test-discovery' option is deprecated"))
+        }
+        // should not emit when LinuxMain is present
+        fixture(name: "Miscellaneous/TestDiscovery/Simple") { path in
+            try localFileSystem.writeFileContents(path.appending(components: "Tests", SwiftTarget.testManifestNames.first!), bytes: "fatalError(\"boom\")")
+            let (_, stderr) = try SwiftPMProduct.SwiftTest.execute(["--enable-test-discovery"] + compilerDiagnosticFlags, packagePath: path)
+            XCTAssertNoMatch(stderr, .contains("warning: '--enable-test-discovery' option is deprecated"))
+        }
+        #endif
     }
 
     func testGenerateLinuxMainDeprecation() {
@@ -580,7 +604,7 @@ class MiscellaneousTestCase: XCTestCase {
     
     func testTestsCanLinkAgainstExecutable() throws {
         // Check if the host compiler supports the '-entry-point-function-name' flag.
-        try XCTSkipUnless(doesHostSwiftCompilerSupportRenamingMainSymbol(), "skipping because host compiler doesn't support '-entry-point-function-name'")
+        try XCTSkipUnless(Resources.default.swiftCompilerSupportsRenamingMainSymbol, "skipping because host compiler doesn't support '-entry-point-function-name'")
         
         fixture(name: "Miscellaneous/TestableExe") { prefix in
             do {
@@ -607,13 +631,50 @@ class MiscellaneousTestCase: XCTestCase {
             }
         }
     }
-}
 
-func doesHostSwiftCompilerSupportRenamingMainSymbol() throws -> Bool {
-    try withTemporaryDirectory { tmpDir in
-        let hostToolchain = try UserToolchain(destination: .hostDestination())
-        FileManager.default.createFile(atPath: "\(tmpDir)/foo.swift", contents: Data())
-        let result = try Process.popen(args: hostToolchain.swiftCompiler.pathString, "-c", "-Xfrontend", "-entry-point-function-name", "-Xfrontend", "foo", "\(tmpDir)/foo.swift", "-o", "\(tmpDir)/foo.o")
-        return try !result.utf8stderrOutput().contains("unknown argument: '-entry-point-function-name'")
+    func testEditModeEndToEnd() {
+        fixture(name: "Miscellaneous/Edit") { prefix in
+            let prefix = resolveSymlinks(prefix)
+            let appPath = prefix.appending(component: "App")
+
+            // prepare the dependencies as git repos
+            try ["Foo", "Bar"].forEach { directory in
+                let path = prefix.appending(component: directory)
+                _ = try Process.checkNonZeroExit(args: "git", "-C", path.pathString, "init")
+            }
+
+            do {
+                // make sure it builds
+                let output = try executeSwiftBuild(appPath)
+                XCTAssertTrue(output.stdout.contains("Fetching \(prefix)/Foo"), output.stdout)
+                XCTAssertTrue(output.stdout.contains("Creating working copy for \(prefix)/Foo"), output.stdout)
+                XCTAssertTrue(output.stdout.contains("Build complete!"), output.stdout)
+            }
+
+            // put foo into edit mode
+            _ = try executeSwiftPackage(appPath, extraArgs: ["edit", "Foo"])
+            XCTAssertTrue(localFileSystem.exists(appPath.appending(components: ["Packages", "Foo"])))
+
+            do {
+                // build again in edit mode
+                let output = try executeSwiftBuild(appPath)
+                XCTAssertTrue(output.stdout.contains("Build complete!"))
+            }
+
+
+            do {
+                // take foo out of edit mode
+                let output = try executeSwiftPackage(appPath, extraArgs: ["unedit", "Foo"])
+                XCTAssertTrue(output.stdout.contains("Creating working copy for \(prefix)/Foo"), output.stdout)
+                XCTAssertFalse(localFileSystem.exists(appPath.appending(components: ["Packages", "Foo"])))
+            }
+
+            // build again in edit mode
+            do {
+                let output = try executeSwiftBuild(appPath)
+                XCTAssertTrue(output.stdout.contains("Build complete!"), output.stdout)
+            }
+        }
+
     }
 }
