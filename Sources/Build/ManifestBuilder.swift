@@ -830,7 +830,7 @@ extension LLBuildManifestBuilder {
                     description: "Merging module summary \(buildProduct.binary.prettyPath())",
                     inputs: buildProduct.ltoIntermediates.map({ Node.file($0.summary) }),
                     outputs: [.file(buildProduct.mergedSummaryPath)],
-                    args: buildProduct.mergeSummaryArguments()
+                    arguments: buildProduct.mergeSummaryArguments()
                 )
                 for intermediate in buildProduct.ltoIntermediates {
                     let dependency = intermediate.moduleC99name
@@ -843,7 +843,7 @@ extension LLBuildManifestBuilder {
                         description: "Lowering SIB \(dependency)",
                         inputs: [.file(intermediate.sib), .file(buildProduct.mergedSummaryPath)],
                         outputs: [.file(object)],
-                        args: buildProduct.lowerSIBArguments(intermediate, objectOutput: object)
+                        arguments: buildProduct.lowerSIBArguments(intermediate, objectOutput: object)
                     )
                 }
                 let inputs = buildProduct.objects + buildProduct.dylibs.map({ $0.binary })
@@ -852,7 +852,7 @@ extension LLBuildManifestBuilder {
                     description: "Linking \(buildProduct.binary.prettyPath())",
                     inputs: inputs.map(Node.file),
                     outputs: [.file(buildProduct.binary)],
-                    args: try buildProduct.linkArguments()
+                    arguments: try buildProduct.linkArguments()
                 )
             case .none, .LLVM:
                 let inputs = buildProduct.objects + buildProduct.dylibs.map({ $0.binary })
@@ -862,7 +862,7 @@ extension LLBuildManifestBuilder {
                     description: "Linking \(buildProduct.binary.prettyPath())",
                     inputs: inputs.map(Node.file),
                     outputs: [.file(buildProduct.binary)],
-                    args: try buildProduct.linkArguments()
+                    arguments: try buildProduct.linkArguments()
                 )
             }
         }
