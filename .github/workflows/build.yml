@@ -8,6 +8,6 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - name: Select latest Xcode
-      run: sudo xcode-select --switch /Applications/Xcode_12.3.app/Contents/Developer/
+      run: sudo xcode-select --switch /Applications/Xcode_12.4.app/Contents/Developer/
     - name: Build
       run: swift build
