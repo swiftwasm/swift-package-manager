@@ -27,11 +27,14 @@ struct GitHubPackageMetadataProvider: PackageMetadataProvider {
     private let diagnosticsEngine: DiagnosticsEngine?
     private let decoder: JSONDecoder
 
+    private let cache: ThreadSafeKeyValueStore<PackageReference, (package: Model.PackageBasicMetadata, timestamp: DispatchTime)>?
+
     init(configuration: Configuration = .init(), httpClient: HTTPClient? = nil, diagnosticsEngine: DiagnosticsEngine? = nil) {
         self.configuration = configuration
         self.httpClient = httpClient ?? Self.makeDefaultHTTPClient(diagnosticsEngine: diagnosticsEngine)
         self.diagnosticsEngine = diagnosticsEngine
         self.decoder = JSONDecoder.makeWithDefaults()
+        self.cache = configuration.cacheTTLInSeconds > 0 ? .init() : nil
     }
 
     func get(_ reference: PackageReference, callback: @escaping (Result<Model.PackageBasicMetadata, Error>) -> Void) {
@@ -42,12 +45,19 @@ struct GitHubPackageMetadataProvider: PackageMetadataProvider {
             return callback(.failure(Errors.invalidGitURL(reference.location)))
         }
 
+        if let cachedMetadata = self.cache?[reference] {
+            if cachedMetadata.timestamp + DispatchTimeInterval.seconds(self.configuration.cacheTTLInSeconds) > DispatchTime.now() {
+                return callback(.success(cachedMetadata.package))
+            }
+        }
+
         let metadataURL = baseURL
         // TODO: make `per_page` configurable? GitHub API's max/default is 100
         let releasesURL = URL(string: baseURL.appendingPathComponent("releases").absoluteString + "?per_page=20") ?? baseURL.appendingPathComponent("releases")
         let contributorsURL = baseURL.appendingPathComponent("contributors")
         let readmeURL = baseURL.appendingPathComponent("readme")
         let licenseURL = baseURL.appendingPathComponent("license")
+        let languagesURL = baseURL.appendingPathComponent("languages")
 
         let sync = DispatchGroup()
         let results = ThreadSafeKeyValueStore<URL, Result<HTTPClientResponse, Error>>()
@@ -81,7 +91,7 @@ struct GitHubPackageMetadataProvider: PackageMetadataProvider {
                         self.diagnosticsEngine?.emit(warning: "Approaching API limits on \(metadataURL.host ?? metadataURL.absoluteString) (\(apiRemaining)/\(apiLimit)), consider configuring an API token for this service.")
                     }
                     // if successful, fan out multiple API calls
-                    [releasesURL, contributorsURL, readmeURL, licenseURL].forEach { url in
+                    [releasesURL, contributorsURL, readmeURL, licenseURL, languagesURL].forEach { url in
                         sync.enter()
                         var headers = HTTPClientHeaders()
                         headers.add(name: "Accept", value: "application/vnd.github.v3+json")
@@ -114,8 +124,9 @@ struct GitHubPackageMetadataProvider: PackageMetadataProvider {
                     let contributors = try results[contributorsURL]?.success?.decodeBody([Contributor].self, using: self.decoder)
                     let readme = try results[readmeURL]?.success?.decodeBody(Readme.self, using: self.decoder)
                     let license = try results[licenseURL]?.success?.decodeBody(License.self, using: self.decoder)
+                    let languages = try results[languagesURL]?.success?.decodeBody([String: Int].self, using: self.decoder)?.keys
 
-                    callback(.success(.init(
+                    let model = Model.PackageBasicMetadata(
                         summary: metadata.description,
                         keywords: metadata.topics,
                         // filters out non-semantic versioned tags
@@ -123,14 +134,33 @@ struct GitHubPackageMetadataProvider: PackageMetadataProvider {
                             guard let version = $0.tagName.flatMap(TSCUtility.Version.init(string:)) else {
                                 return nil
                             }
-                            return Model.PackageBasicVersionMetadata(version: version, summary: $0.body, createdAt: $0.createdAt, publishedAt: $0.publishedAt)
+                            return Model.PackageBasicVersionMetadata(version: version, title: $0.name, summary: $0.body, createdAt: $0.createdAt, publishedAt: $0.publishedAt)
                         },
                         watchersCount: metadata.watchersCount,
                         readmeURL: readme?.downloadURL,
                         license: license.flatMap { .init(type: Model.LicenseType(string: $0.license.spdxID), url: $0.downloadURL) },
                         authors: contributors?.map { .init(username: $0.login, url: $0.url, service: .init(name: "GitHub")) },
+                        languages: languages.flatMap(Set.init) ?? metadata.language.map { [$0] },
                         processedAt: Date()
-                    )))
+                    )
+
+                    if let cache = self.cache {
+                        cache[reference] = (model, DispatchTime.now())
+
+                        if cache.count > self.configuration.cacheSize {
+                            DispatchQueue.sharedConcurrent.async {
+                                // Delete oldest entries with some room for growth
+                                let sortedCacheEntries = cache.get().sorted { $0.value.timestamp < $1.value.timestamp }
+                                let deleteCount = sortedCacheEntries.count - (self.configuration.cacheSize / 2)
+                                self.diagnosticsEngine?.emit(note: "Cache size limit exceeded, deleting the oldest \(deleteCount) entries")
+
+                                for index in 0 ..< deleteCount {
+                                    _ = cache.removeValue(forKey: sortedCacheEntries[index].key)
+                                }
+                            }
+                        }
+                    }
+                    callback(.success(model))
                 }
             } catch {
                 return callback(.failure(error))
@@ -184,11 +214,17 @@ struct GitHubPackageMetadataProvider: PackageMetadataProvider {
     public struct Configuration {
         public var apiLimitWarningThreshold: Int
         public var authTokens: [AuthTokenType: String]?
+        public var cacheTTLInSeconds: Int
+        public var cacheSize: Int
 
         public init(authTokens: [AuthTokenType: String]? = nil,
-                    apiLimitWarningThreshold: Int? = nil) {
+                    apiLimitWarningThreshold: Int? = nil,
+                    cacheTTLInSeconds: Int? = nil,
+                    cacheSize: Int? = nil) {
             self.authTokens = authTokens
             self.apiLimitWarningThreshold = apiLimitWarningThreshold ?? 5
+            self.cacheTTLInSeconds = cacheTTLInSeconds ?? 3600
+            self.cacheSize = cacheSize ?? 1000
         }
     }
 

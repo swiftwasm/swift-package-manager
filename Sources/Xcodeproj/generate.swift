@@ -97,8 +97,8 @@ public func generate(
         // references in the project.
         extraDirs = try findDirectoryReferences(path: srcroot)
 
-        if try repositoryProvider.checkoutExists(at: srcroot) {
-            let workingCheckout = try repositoryProvider.openCheckout(at: srcroot)
+        if try repositoryProvider.workingCopyExists(at: srcroot) {
+            let workingCheckout = try repositoryProvider.openWorkingCopy(at: srcroot)
             extraFiles = try getExtraFilesFor(package: graph.rootPackages[0], in: workingCheckout)
         }
     } else {
@@ -226,7 +226,7 @@ func generateSchemes(
         // tests associated so testing works. We suffix the name of this scheme with
         // -Package so its name doesn't collide with any products or target with
         // same name.
-        let schemeName = "\(graph.rootPackages[0].name)-Package.xcscheme"
+        let schemeName = "\(graph.rootPackages[0].manifestName)-Package.xcscheme" // TODO: use identity instead?
         try open(schemesDir.appending(RelativePath(schemeName))) { stream in
             legacySchemeGenerator(
                 container: schemeContainer,

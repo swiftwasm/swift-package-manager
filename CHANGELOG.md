@@ -2,17 +2,22 @@ Note: This is in reverse chronological order, so newer entries are added to the 
 
 Swift v.Next
  -----------
- * [#3310]
-    * Improvements
 
+
+
+Swift 5.5
+ -----------
+* [3410]
+    In a package that specifies a minimum tools version of 5.5, `@main` can now be used in a single-source file executable as long as the name of the source file isn't `main.swift`.  To work around special compiler semantics with single-file modules, SwiftPM now passes `-parse-as-library` when compiling an executable module that contains a single Swift source file whose name is not `main.swift`.
+
+* [#3310]
     Adding a dependency requirement can now be done with the convenience initializer `.package(url: String, revision: String)`.
 
 * [#3292]
-   * Improvements
+    Adding a dependency requirement can now be done with the convenience initializer `.package(url: String, branch: String)`.
    
-   Adding a dependency requirement can now be done with the convenience initializer `.package(url: String, branch: String)`.
-   
-   Test targets can now link against executable targets as if they were libraries, so that they can test any data strutures or algorithms in them.  All the code in the executable except for the main entry point itself is available to the unit test.  Separate executables are still linked, and can be tested as a subprocess in the same way as before.  This feature is available to tests defined in packages that have a tools version of `vNext` or newer. 
+* [#3316]
+    Test targets can now link against executable targets as if they were libraries, so that they can test any data strutures or algorithms in them.  All the code in the executable except for the main entry point itself is available to the unit test.  Separate executables are still linked, and can be tested as a subprocess in the same way as before.  This feature is available to tests defined in packages that have a tools version of `5.5` or newer. 
 
 
 

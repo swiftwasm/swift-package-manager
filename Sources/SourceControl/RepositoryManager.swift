@@ -77,13 +77,9 @@ public class RepositoryManager {
         /// The status of the repository.
         fileprivate var status: Status = .uninitialized
 
-        /// The serial queue to perform the operations like updating the state
+        /// Lock to protect  the operations like updating the state
         /// of the handle and fetching the repositories from its remote.
-        ///
-        /// The advantage of having a serial queue in handle is that we don't
-        /// have to worry about multiple lookups on the same handle as they will
-        /// be queued automatically.
-        fileprivate let serialQueue = DispatchQueue(label: "org.swift.swiftpm.repohandle-serial")
+        private let statusLock = Lock()
 
         /// Create a handle.
         fileprivate init(manager: RepositoryManager, repository: RepositorySpecifier, subpath: RelativePath) {
@@ -106,16 +102,16 @@ public class RepositoryManager {
             return try self.manager.open(self)
         }
 
-        /// Clone into a working copy at on the local file system.
+        /// Create a working copy at on the local file system.
         ///
         /// - Parameters:
         ///   - path: The path at which to create the working copy; it is
         ///           expected to be non-existent when called.
         ///
         ///   - editable: The clone is expected to be edited by user.
-        public func cloneCheckout(to path: AbsolutePath, editable: Bool) throws {
-            precondition(status == .available, "cloneCheckout() called in invalid state")
-            try self.manager.cloneCheckout(self, to: path, editable: editable)
+        public func createWorkingCopy(at path: AbsolutePath, editable: Bool) throws -> WorkingCheckout {
+            precondition(status == .available, "createWorkingCopy() called in invalid state")
+            return try self.manager.createWorkingCopy(self, at: path, editable: editable)
         }
 
         fileprivate func toJSON() -> JSON {
@@ -124,6 +120,10 @@ public class RepositoryManager {
                 "repositoryURL": repository,
                 "subpath": subpath,
             ])
+        }
+
+        func withStatusLock(_ body: () throws -> Void) rethrows {
+            try self.statusLock.withLock(body)
         }
     }
 
@@ -155,15 +155,15 @@ public class RepositoryManager {
     // repositories map to the same location.
     //
     /// The map of registered repositories.
-    fileprivate var repositories: [String: RepositoryHandle] = [:]
+    private var repositories: [String: RepositoryHandle] = [:]
 
     /// The map of serialized repositories.
     ///
     /// NOTE: This is to be used only for persistence support.
-    fileprivate var serializedRepositories: [String: JSON] = [:]
+    private var serializedRepositories: [String: JSON] = [:]
 
-    /// Queue to protect concurrent reads and mutations to repositories registery.
-    private let serialQueue = DispatchQueue(label: "org.swift.swiftpm.repomanagerqueue-serial")
+    /// Lock to protect concurrent reads and mutations to repositories registry.
+    private let lock = Lock()
 
     /// Operation queue to do concurrent operations on manager.
     ///
@@ -243,7 +243,7 @@ public class RepositoryManager {
             // First look for the handle.
             let handle = self.getHandle(repository: repository)
             // Dispatch the action we want to take on the serial queue of the handle.
-            handle.serialQueue.sync {
+            handle.withStatusLock {
                 let result: LookupResult
 
                 switch handle.status {
@@ -305,7 +305,7 @@ public class RepositoryManager {
                     }
 
                     // Save the manager state.
-                    self.serialQueue.sync {
+                    self.lock.withLock {
                         do {
                             // Update the serialized repositories map.
                             //
@@ -382,8 +382,7 @@ public class RepositoryManager {
     ///
     /// Note: This method is thread safe.
     private func getHandle(repository: RepositorySpecifier) -> RepositoryHandle {
-        return serialQueue.sync {
-
+        self.lock.withLock {
             // Reset if the state file was deleted during the lifetime of RepositoryManager.
             if !self.serializedRepositories.isEmpty && !self.persistence.stateFileExists() {
                 self.unsafeReset()
@@ -394,7 +393,7 @@ public class RepositoryManager {
 
             if let oldHandle = self.repositories[repository.url] {
                 handle = oldHandle
-            } else if let cachePath = cachePath, fileSystem.exists(cachePath.appending(subpath)) {
+            } else if let cachePath = self.cachePath, self.fileSystem.exists(cachePath.appending(subpath)) {
                 handle = RepositoryHandle(manager: self, repository: repository, subpath: subpath)
                 handle.status = .cached
                 self.repositories[repository.url] = handle
@@ -409,34 +408,34 @@ public class RepositoryManager {
 
     /// Open a repository from a handle.
     private func open(_ handle: RepositoryHandle) throws -> Repository {
-        return try provider.open(
-            repository: handle.repository, at: path.appending(handle.subpath))
+        try self.provider.open(
+            repository: handle.repository, at: self.path.appending(handle.subpath))
     }
 
-    /// Clone a repository from a handle.
-    private func cloneCheckout(
+    /// Create a working copy of the repository from a handle.
+    private func createWorkingCopy(
         _ handle: RepositoryHandle,
-        to destinationPath: AbsolutePath,
+        at destinationPath: AbsolutePath,
         editable: Bool
-    ) throws {
-        try provider.cloneCheckout(
+    ) throws -> WorkingCheckout {
+        try self.provider.createWorkingCopy(
             repository: handle.repository,
-            at: path.appending(handle.subpath),
-            to: destinationPath,
+            sourcePath: self.path.appending(handle.subpath),
+            at: destinationPath,
             editable: editable)
     }
 
     /// Removes the repository.
     public func remove(repository: RepositorySpecifier) throws {
-        try serialQueue.sync {
+        try self.lock.withLock {
             // If repository isn't present, we're done.
-            guard let handle = repositories[repository.url] else {
+            guard let handle = self.repositories[repository.url] else {
                 return
             }
-            repositories[repository.url] = nil
-            serializedRepositories[repository.url] = nil
-            let repositoryPath = path.appending(handle.subpath)
-            try fileSystem.removeFileTree(repositoryPath)
+            self.repositories[repository.url] = nil
+            self.serializedRepositories[repository.url] = nil
+            let repositoryPath = self.path.appending(handle.subpath)
+            try self.fileSystem.removeFileTree(repositoryPath)
             try self.persistence.saveState(self)
         }
     }
@@ -445,7 +444,7 @@ public class RepositoryManager {
     ///
     /// Note: This also removes the cloned repositories from the disk.
     public func reset() {
-        serialQueue.sync {
+        self.lock.withLock {
             self.unsafeReset()
         }
     }

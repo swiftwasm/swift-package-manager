@@ -227,17 +227,19 @@ public func loadPackageGraph(
     explicitProduct: String? = nil,
     shouldCreateMultipleTestProducts: Bool = false,
     allowPluginTargets: Bool = false,
-    createREPLProduct: Bool = false
+    createREPLProduct: Bool = false,
+    useXCBuildFileRules: Bool = false
 ) throws -> PackageGraph {
-    let rootManifests = manifests.filter { $0.packageKind == .root }
+    let rootManifests = manifests.filter { $0.packageKind == .root }.spm_createDictionary{ ($0.path, $0) }
     let externalManifests = manifests.filter { $0.packageKind != .root }
-    let packages = rootManifests.map { $0.path }
+    let packages = Array(rootManifests.keys)
     let input = PackageGraphRootInput(packages: packages)
     let graphRoot = PackageGraphRoot(input: input, manifests: rootManifests, explicitProduct: explicitProduct)
 
     return try PackageGraph.load(
         root: graphRoot,
         identityResolver: identityResolver,
+        additionalFileRules: useXCBuildFileRules ? FileRuleDescription.xcbuildFileTypes : [],
         externalManifests: externalManifests,
         binaryArtifacts: binaryArtifacts,
         diagnostics: diagnostics,
