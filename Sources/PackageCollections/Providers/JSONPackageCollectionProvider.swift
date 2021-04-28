@@ -53,7 +53,7 @@ struct JSONPackageCollectionProvider: PackageCollectionProvider {
         self.decoder = JSONDecoder.makeWithDefaults()
         self.validator = JSONModel.Validator(configuration: configuration.validator)
         self.signatureValidator = signatureValidator ?? PackageCollectionSigning(
-            trustedRootCertsDir: configuration.trustedRootCertsDir ?? fileSystem.dotSwiftPM.appending(components: "config", "trust-root-certs").asURL,
+            trustedRootCertsDir: configuration.trustedRootCertsDir ?? fileSystem.swiftPMConfigDirectory.appending(component: "trust-root-certs").asURL,
             additionalTrustedRootCerts: sourceCertPolicy.allRootCerts,
             callbackQueue: .sharedConcurrent,
             diagnosticsEngine: diagnosticsEngine
@@ -426,6 +426,8 @@ extension PackageModel.Platform {
         switch name.lowercased() {
         case let name where name.contains("macos"):
             self = PackageModel.Platform.macOS
+        case let name where name.contains("maccatalyst"):
+            self = PackageModel.Platform.macCatalyst
         case let name where name.contains("ios"):
             self = PackageModel.Platform.iOS
         case let name where name.contains("tvos"):
