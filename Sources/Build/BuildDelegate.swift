@@ -553,18 +553,22 @@ public final class BuildDelegate: BuildSystemDelegate, SwiftCompilerOutputParser
             }
 
             if let output = message.standardOutput {
-                // Scoop out any errors from the output, so they can later be passed to the advice provider in case of failure.
-                let regex = try! RegEx(pattern: #".*(error:[^\n]*)\n.*"#, options: .dotMatchesLineSeparators)
-                for match in regex.matchGroups(in: output) {
-                    self.errorMessagesByTarget[parser.targetName] = (self.errorMessagesByTarget[parser.targetName] ?? []) + [match[0]]
-                }
-                
+                // first we want to print the output so users have it handy
                 if !self.isVerbose {
                     self.progressAnimation.clear()
                 }
 
                 self.outputStream <<< output
                 self.outputStream.flush()
+
+                // next we want to try and scoop out any errors from the output (if reasonable size, otherwise this will be very slow),
+                // so they can later be passed to the advice provider in case of failure.
+                if output.utf8.count < 1024 * 10 {
+                    let regex = try! RegEx(pattern: #".*(error:[^\n]*)\n.*"#, options: .dotMatchesLineSeparators)
+                    for match in regex.matchGroups(in: output) {
+                        self.errorMessagesByTarget[parser.targetName] = (self.errorMessagesByTarget[parser.targetName] ?? []) + [match[0]]
+                    }
+                }
             }
         }
     }
@@ -575,12 +579,26 @@ public final class BuildDelegate: BuildSystemDelegate, SwiftCompilerOutputParser
         onCommmandFailure?()
     }
 
+    func buildComplete(success: Bool) {
+        queue.sync {
+            if success {
+                self.progressAnimation.update(
+                    step: self.taskTracker.finishedCount,
+                    total: self.taskTracker.totalCount,
+                    text: "Build complete!")
+            }
+            self.progressAnimation.complete(success: success)
+        }
+    }
+
+    // MARK: Private
     private func updateProgress() {
         if let progressText = taskTracker.latestFinishedText {
-            progressAnimation.update(
+            self.progressAnimation.update(
                 step: taskTracker.finishedCount,
                 total: taskTracker.totalCount,
-                text: progressText)
+                text: progressText
+            )
         }
     }
 }
@@ -603,13 +621,6 @@ fileprivate struct CommandTaskTracker {
             totalCount -= 1
             break
         case .isComplete:
-            if (totalCount == finishedCount) {
-                let latestOutput: String? = latestFinishedText
-                latestFinishedText = """
-                \(latestOutput ?? "")\n
-                * Build Completed!
-                """
-            }
             break
         @unknown default:
             assertionFailure("unhandled command status kind \(kind) for command \(command)")
