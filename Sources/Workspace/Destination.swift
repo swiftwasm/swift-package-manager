@@ -46,13 +46,13 @@ public struct Destination: Encodable, Equatable {
     public var binDir: AbsolutePath
 
     /// Additional flags to be passed to the C compiler.
-    public let extraCCFlags: [String]
+    public var extraCCFlags: [String]
 
     /// Additional flags to be passed to the Swift compiler.
-    public let extraSwiftCFlags: [String]
+    public var extraSwiftCFlags: [String]
 
     /// Additional flags to be passed when compiling with C++.
-    public let extraCPPFlags: [String]
+    public var extraCPPFlags: [String]
 
     /// Creates a compilation destination with the specified properties.
     public init(
